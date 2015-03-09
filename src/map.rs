@@ -2,12 +2,12 @@
 ///
 /// This structure achieves better performance than a BTree implementations for common operations while
 /// still allowing range scanning and ordered iteration. Performance wise it's usually 50+% faster than
-/// the std lib BTreeMap in random keys and pulls ahead rapdily if keys have a common prefix. 
+/// the std lib BTreeMap for random keys and pulls ahead rapdily if keys have common prefixes.
 ///
 /// It's specialized for string keys, specifically ASCII or UTF-8.
 ///
-/// The Burst Trie was original described by S. Heinz
-/// you can find the original paper in the internet by it's title
+/// The Burst Trie was original described by S. Heinz.
+/// You can find the original paper in the internet by it's title
 /// "Burst Tries: A Fast, Efficient Data Structure for String Keys"
 
 use std::cmp::Ordering;
@@ -542,6 +542,6 @@ mod bench {
     // map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
 
 
-    // map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BurstTrie);
-    // map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BurstTrie);
+    // map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
+    // map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
 }
