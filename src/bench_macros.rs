@@ -130,3 +130,35 @@ macro_rules! map_insert_seq_bench {
         map_insert_seq_bench!($name, $min_len, $max_len, $map_len, $map_type, "");
     );
 }
+
+macro_rules! map_iter_bench {
+    ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
+        #[bench]
+        fn $name(b: &mut test::Bencher) {
+            use rand::{Rng, StdRng, SeedableRng};
+            use std::num::Int;
+
+            let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
+            let mut map = $map_type::new();
+            let value = 0usize; 
+
+            let keys = (0..$map_len).map(|_| {
+                let key_len = rng.gen_range($min_len, $max_len);
+                let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice();
+                map.insert(key, value)    
+            }).collect::<Vec<_>>();
+            
+            b.iter(|| {
+                for (key, value) in map.iter() {
+                    test::black_box(key);
+                    test::black_box(value);
+                }
+            });
+
+            test::black_box(map);
+        }
+    );
+    ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident) => (
+        map_iter_bench!($name, $min_len, $max_len, $map_len, $map_type, "");
+    );
+}

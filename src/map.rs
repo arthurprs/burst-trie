@@ -12,6 +12,8 @@
 
 use std::cmp::Ordering;
 use std::mem;
+use std::default::Default;
+use std::slice::Iter as SliceIter;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
 const CONTAINER_SIZE: usize = 64;
@@ -150,6 +152,15 @@ impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
         self.root = BurstTrieNode::Empty;
         self.len = 0;
     }
+
+
+    pub fn iter(&self) -> Iter<K, V> {
+        Iter {
+            stack: vec![&self.root],
+            container_iter: None,
+            remaining_len: self.len
+        }
+    }
 }
 
 impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
@@ -232,7 +243,6 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
     }
 }
 
-
 impl<K, V> ContainerNode<K, V> where K: Str, K: Ord {
     fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
         let mut container = ContainerNode {
@@ -288,13 +298,14 @@ impl<K, V> ContainerNode<K, V> where K: Str, K: Ord {
         });
         match res_bs {
             Ok(pos) => Some(self.items.remove(pos).1),
-            Err(pos) => None
+            Err(_) => None
         }
     }
 
     #[inline]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: Str {
-        // FIXME: binary search is doing bounds checking internally ;/ 
+        // FIXME: binary search is doing bounds checking internally ;/
+        // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = self.items.binary_search_by(|other| {
             other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
         });
@@ -307,7 +318,8 @@ impl<K, V> ContainerNode<K, V> where K: Str, K: Ord {
 
     #[inline]
     fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: Str {
-        // FIXME: binary search is doing bounds checking internally ;/ 
+        // FIXME: binary search is doing bounds checking internally ;/
+        // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = self.items.binary_search_by(|other| {
             other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
         });
@@ -396,11 +408,92 @@ impl<K, V> AccessNode<K, V> where K: Str, K: Ord {
     }
 }
 
+
+impl<K, V> Default for BurstTrieMap<K, V> where K: Str, K: Ord {
+    #[inline]
+    fn default() -> BurstTrieMap<K, V> { BurstTrieMap::new() }
+}
+
+pub struct Iter<'a, K: 'a, V: 'a> where K: Str, K: Ord {
+    stack: Vec<&'a BurstTrieNode<K, V>>,
+    container_iter: Option<SliceIter<'a, (K, V)>>,
+    remaining_len: usize
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<(&'a K, &'a V)> {
+        if let Some(ref mut iter) = self.container_iter {
+            let next = iter.next();
+            if let Some(&(ref key, ref value)) = next {
+                self.remaining_len -= 1;
+                return Some((key, value));
+            }
+        }
+
+        while let Some(node) = self.stack.pop() {
+            match *node {
+                BurstTrieNode::Container(ref container) => {
+                    let mut iter = container.items.iter();
+                    let next = iter.next();
+                    mem::replace(&mut self.container_iter, Some(iter)); 
+                    if let Some(&(ref key, ref value)) = next {
+                        self.remaining_len -= 1;
+                        return Some((key, value));
+                    }
+                },
+                BurstTrieNode::Access(ref access) => {
+                    // add to stack in reverse order
+                    for i in (1..CONTAINER_SIZE + 1) {
+                        let idx = CONTAINER_SIZE - i;
+                        match access.nodes[idx] {
+                            BurstTrieNode::Container(_) | BurstTrieNode::Access(_) => {
+                                self.stack.push(&access.nodes[idx]);
+                            }
+                            _ => ()
+                        }
+                    }
+
+                    if let Some((ref key, ref value)) = access.terminator {
+                        self.remaining_len -= 1;
+                        return Some((key, value));
+                    }
+                }
+                _ => ()
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining_len, Some(self.remaining_len))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use test;
     use super::BurstTrieMap;
     use rand::*;
+
+    #[test]
+    fn test_iter() {
+        let mut map = BurstTrieMap::new();
+
+        for i in (100000..999999) {
+            map.insert(i.to_string(), i);
+        }
+
+        let mut i = 100000;
+        for (key, value) in map.iter() {
+            assert_eq!(*key, i.to_string());
+            assert_eq!(*value, i);
+            i += 1;
+        }
+        assert_eq!(i, 999999);
+    }
 
     #[test]
     fn test_correctness() {
@@ -499,30 +592,33 @@ mod bench {
     use super::BurstTrieMap;
     use bench_macros::BENCH_SEED;
 
-    map_get_rnd_bench!(burst_get_short_1000, 5, 15, 1000, BurstTrieMap);
-    map_get_rnd_bench!(burst_get_short_10000, 5, 15, 10000, BurstTrieMap);
-    map_get_rnd_bench!(burst_get_short_100000, 5, 15, 100000, BurstTrieMap);
-    map_get_rnd_bench!(burst_get_medium_1000, 20, 100, 1000, BurstTrieMap);
-    map_get_rnd_bench!(burst_get_medium_10000, 20, 100, 10000, BurstTrieMap);
-    map_get_rnd_bench!(burst_get_medium_100000, 20, 100, 100000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_short_1000, 5, 15, 1000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_short_10000, 5, 15, 10000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_short_100000, 5, 15, 100000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_medium_1000, 20, 100, 1000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_medium_10000, 20, 100, 10000, BurstTrieMap);
-    map_insert_rnd_bench!(burst_insert_medium_100000, 20, 100, 100000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_short_1000, 5, 15, 1000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_short_10000, 5, 15, 10000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_short_100000, 5, 15, 100000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_medium_1000, 20, 100, 1000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_medium_10000, 20, 100, 10000, BurstTrieMap);
+    // map_get_rnd_bench!(burst_get_medium_100000, 20, 100, 100000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_short_1000, 5, 15, 1000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_short_10000, 5, 15, 10000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_short_100000, 5, 15, 100000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_medium_1000, 20, 100, 1000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_medium_10000, 20, 100, 10000, BurstTrieMap);
+    // map_insert_rnd_bench!(burst_insert_medium_100000, 20, 100, 100000, BurstTrieMap);
 
-    map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
-    map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
-
-
-    map_get_rnd_bench!(burst_get_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    map_get_rnd_bench!(burst_get_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
-    map_insert_rnd_bench!(burst_insert_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    map_insert_rnd_bench!(burst_insert_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
+    // map_get_rnd_bench!(burst_get_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
+    // map_get_rnd_bench!(burst_get_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
+    // map_insert_rnd_bench!(burst_insert_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
+    // map_insert_rnd_bench!(burst_insert_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
 
 
-    // use std::collections::BTreeMap;
+    // map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
+    // map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
+
+    map_iter_bench!(burst_iter_10000, 20, 100, 10000, BurstTrieMap);
+
+
+
+    use std::collections::BTreeMap;
     // map_get_rnd_bench!(btree_get_short_1000, 5, 15, 1000, BTreeMap);
     // map_get_rnd_bench!(btree_get_short_10000, 5, 15, 10000, BTreeMap);
     // map_get_rnd_bench!(btree_get_short_100000, 5, 15, 100000, BTreeMap);
@@ -544,4 +640,7 @@ mod bench {
 
     // map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
     // map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
+
+
+    map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
 }
