@@ -1,5 +1,6 @@
 #![feature(core)]
 #![feature(collections)]
+#![feature(test)]
 
 extern crate core;
 extern crate collections;

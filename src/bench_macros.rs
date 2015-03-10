@@ -6,7 +6,6 @@ macro_rules! map_get_rnd_bench {
         #[bench]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
-            use std::num::Int;
 
             let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
             let mut map = $map_type::new();
@@ -39,7 +38,6 @@ macro_rules! map_insert_rnd_bench {
         #[bench]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
-            use std::num::Int;
 
             let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
             let mut map = $map_type::new();
@@ -68,7 +66,6 @@ macro_rules! map_get_seq_bench {
         #[bench]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
-            use std::num::Int;
 
             let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
             let mut map = $map_type::new();
@@ -104,7 +101,6 @@ macro_rules! map_insert_seq_bench {
         #[bench]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
-            use std::num::Int;
 
             let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
             let mut map = $map_type::new();
@@ -136,13 +132,12 @@ macro_rules! map_iter_bench {
         #[bench]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
-            use std::num::Int;
 
             let mut rng: StdRng = SeedableRng::from_seed(BENCH_SEED);
             let mut map = $map_type::new();
             let value = 0usize; 
 
-            let keys = (0..$map_len).map(|_| {
+            (0..$map_len).map(|_| {
                 let key_len = rng.gen_range($min_len, $max_len);
                 let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice();
                 map.insert(key, value)    

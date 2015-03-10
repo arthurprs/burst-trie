@@ -13,7 +13,9 @@
 use std::cmp::Ordering;
 use std::mem;
 use std::default::Default;
-use std::slice::Iter as SliceIter;
+use std::slice;
+use std::vec;
+use std::ptr;
 use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
@@ -204,6 +206,14 @@ impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
         }
     }
     
+    pub fn into_iter(self) -> IntoIter<K, V> {
+        IntoIter {
+            stack: vec![self.root],
+            container_iter: None,
+            remaining_len: self.len
+        }
+    }
+
     pub fn keys<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a K> {
         #[inline(always)]
         fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a K {
@@ -474,7 +484,7 @@ impl<K, V> Default for BurstTrieMap<K, V> where K: Str, K: Ord {
 
 pub struct Iter<'a, K: 'a, V: 'a> where K: Str, K: Ord {
     stack: Vec<&'a BurstTrieNode<K, V>>,
-    container_iter: Option<SliceIter<'a, (K, V)>>,
+    container_iter: Option<slice::Iter<'a, (K, V)>>,
     remaining_len: usize
 }
 
@@ -531,9 +541,74 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
     }
 }
 
+pub struct IntoIter<K, V> where K: Str, K: Ord {
+    stack: Vec<BurstTrieNode<K, V>>,
+    container_iter: Option<vec::IntoIter<(K, V)>>,
+    remaining_len: usize
+}
+
+impl<K, V> Iterator for IntoIter<K, V> where K: Str, K: Ord {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<(K, V)> {
+        if let Some(ref mut iter) = self.container_iter {
+            let next = iter.next();
+            if next.is_some() {
+                self.remaining_len -= 1;
+                return next;
+            }
+        }
+
+        while let Some(node) = self.stack.pop() {
+            match node {
+                BurstTrieNode::Container(container) => {
+                    let mut iter = container.items.into_iter();
+                    let next = iter.next();
+                    mem::replace(&mut self.container_iter, Some(iter));
+                    if next.is_some() {
+                        self.remaining_len -= 1;
+                        return next;
+                    }
+                },
+                BurstTrieNode::Access(access) => {
+                    // add to stack in reverse order
+                    for i in (1..CONTAINER_SIZE + 1) {
+                        let idx = CONTAINER_SIZE - i;
+                        // move unsafelly since rust static arrays won't allow partial moves
+                        let node = unsafe {
+                            let nodes_ptr: *const BurstTrieNode<K, V> = mem::transmute(&*access.nodes);
+                            ptr::read(nodes_ptr.offset(idx as isize))
+                        };
+                        match node {
+                            BurstTrieNode::Container(_) |
+                            BurstTrieNode::Access(_) => {
+                                self.stack.push(node);
+                            },
+                            _ => ()
+                        }
+                    }
+                    // prevent droping the array since we unsafelly moved it to the stack
+                    unsafe { mem::forget(access.nodes) };
+
+                    if access.terminator.is_some() {
+                        self.remaining_len -= 1;
+                        return access.terminator;
+                    }
+                },
+                _ => ()
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining_len, Some(self.remaining_len))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use test;
     use super::BurstTrieMap;
     use rand::*;
 
@@ -549,6 +624,24 @@ mod tests {
         for (key, value) in map.iter() {
             assert_eq!(key.parse::<usize>().unwrap(), i);
             assert_eq!(*value, i);
+            i += 1;
+        }
+        assert_eq!(i, 999999);
+    }
+
+    #[test]
+    fn test_into_iter() {
+        let mut map = BurstTrieMap::new();
+
+        // use a dropable value so it crashes if double drop
+        for i in (100000..999999) {
+            map.insert(i.to_string(), i.to_string());
+        }
+
+        let mut i = 100000usize;
+        for (key, value) in map.into_iter() {
+            assert_eq!(key.parse::<usize>().unwrap(), i);
+            assert_eq!(value.parse::<usize>().unwrap(), i);
             i += 1;
         }
         assert_eq!(i, 999999);
