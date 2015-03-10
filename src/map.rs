@@ -14,6 +14,7 @@ use std::cmp::Ordering;
 use std::mem;
 use std::default::Default;
 use std::slice::Iter as SliceIter;
+use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
 const CONTAINER_SIZE: usize = 64;
@@ -153,13 +154,28 @@ impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
         self.len = 0;
     }
 
-
     pub fn iter(&self) -> Iter<K, V> {
         Iter {
             stack: vec![&self.root],
             container_iter: None,
             remaining_len: self.len
         }
+    }
+    
+    pub fn keys<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a K> {
+        #[inline(always)]
+        fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a K {
+            &kv.0
+        }
+        self.iter().map(map_fn)
+    }
+
+    pub fn values<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a V> {
+        #[inline(always)]
+        fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a V {
+            &kv.1
+        }
+        self.iter().map(map_fn)
     }
 }
 
@@ -188,7 +204,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
         None
     }
 
-    #[inline]
+    #[inline(always)]
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: Str {
         match *self {
             BurstTrieNode::Empty => {
@@ -203,7 +219,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: Str {
         match *self {
             BurstTrieNode::Empty => {
@@ -218,7 +234,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: Str {
         match *self {
             BurstTrieNode::Empty => {
@@ -448,9 +464,10 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
                     for i in (1..CONTAINER_SIZE + 1) {
                         let idx = CONTAINER_SIZE - i;
                         match access.nodes[idx] {
-                            BurstTrieNode::Container(_) | BurstTrieNode::Access(_) => {
-                                self.stack.push(&access.nodes[idx]);
-                            }
+                            ref node @ BurstTrieNode::Container(_) |
+                            ref node @ BurstTrieNode::Access(_) => {
+                                self.stack.push(node);
+                            },
                             _ => ()
                         }
                     }
@@ -459,7 +476,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
                         self.remaining_len -= 1;
                         return Some((key, value));
                     }
-                }
+                },
                 _ => ()
             }
         }
@@ -486,9 +503,41 @@ mod tests {
             map.insert(i.to_string(), i);
         }
 
-        let mut i = 100000;
+        let mut i = 100000usize;
         for (key, value) in map.iter() {
-            assert_eq!(*key, i.to_string());
+            assert_eq!(key.parse::<usize>().unwrap(), i);
+            assert_eq!(*value, i);
+            i += 1;
+        }
+        assert_eq!(i, 999999);
+    }
+
+    #[test]
+    fn test_keys() {
+        let mut map = BurstTrieMap::new();
+
+        for i in (100000..999999) {
+            map.insert(i.to_string(), i);
+        }
+
+        let mut i = 100000usize;
+        for key in map.keys() {
+            assert_eq!(key.parse::<usize>().unwrap(), i);
+            i += 1;
+        }
+        assert_eq!(i, 999999);
+    }
+
+    #[test]
+    fn test_values() {
+        let mut map = BurstTrieMap::new();
+
+        for i in (100000..999999) {
+            map.insert(i.to_string(), i);
+        }
+
+        let mut i = 100000usize;
+        for value in map.values() {
             assert_eq!(*value, i);
             i += 1;
         }
