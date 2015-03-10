@@ -16,6 +16,7 @@ use std::default::Default;
 use std::slice;
 use std::vec;
 use std::ptr;
+use std::boxed;
 use std::iter::Map;
 use std::ops::{Index, IndexMut};
 
@@ -586,12 +587,14 @@ impl<K, V> Iterator for IntoIter<K, V> where K: Str {
                     }
                 },
                 BurstTrieNode::Access(access) => {
+                    // move unsafelly since rust static arrays won't allow partial moves
+                    let nodes_ptr: *const BurstTrieNode<K, V> = unsafe {
+                        mem::transmute(boxed::into_raw(access.nodes))
+                    };
                     // add to stack in reverse order
                     for i in (1..CONTAINER_SIZE + 1) {
                         let idx = CONTAINER_SIZE - i;
-                        // move unsafelly since rust static arrays won't allow partial moves
                         let node = unsafe {
-                            let nodes_ptr: *const BurstTrieNode<K, V> = mem::transmute(&*access.nodes);
                             ptr::read(nodes_ptr.offset(idx as isize))
                         };
                         match node {
@@ -602,8 +605,6 @@ impl<K, V> Iterator for IntoIter<K, V> where K: Str {
                             _ => ()
                         }
                     }
-                    // prevent droping the array since we unsafelly moved it to the stack
-                    unsafe { mem::forget(access.nodes) };
 
                     if access.terminator.is_some() {
                         self.remaining_len -= 1;
