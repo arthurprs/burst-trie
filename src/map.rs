@@ -17,6 +17,7 @@ use std::slice;
 use std::vec;
 use std::ptr;
 use std::iter::Map;
+use std::ops::{Index, IndexMut};
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
 const CONTAINER_SIZE: usize = 64;
@@ -24,27 +25,27 @@ const CONTAINER_SIZE: usize = 64;
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
 /// See module level docs for details.
-pub struct BurstTrieMap<K, V> where K: Str, K: Ord {
+pub struct BurstTrieMap<K, V> where K: Str {
     root: BurstTrieNode<K, V>,
     len: usize
 }
 
-enum BurstTrieNode<K, V> where K: Str, K: Ord {
+enum BurstTrieNode<K, V> where K: Str {
     Empty,
     Container(ContainerNode<K, V>),
     Access(AccessNode<K, V>)
 }
 
-struct ContainerNode<K, V> where K: Str, K: Ord {
+struct ContainerNode<K, V> where K: Str {
     items: Vec<(K, V)>
 }
 
-struct AccessNode<K, V> where K: Str, K: Ord {
+struct AccessNode<K, V> where K: Str {
     nodes: Box<[BurstTrieNode<K, V>; ALPHABET_SIZE]>,
     terminator: Option<(K, V)>
 }
 
-impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
+impl<K, V> BurstTrieMap<K, V> where K: Str {
     
     /// Returns a new empty BurstTrieMap
     pub fn new() -> BurstTrieMap<K, V> {
@@ -231,7 +232,7 @@ impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
     }
 }
 
-impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
+impl<K, V> BurstTrieNode<K, V> where K: Str  {
 
     #[inline]
     fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
@@ -312,7 +313,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
     }
 }
 
-impl<K, V> ContainerNode<K, V> where K: Str, K: Ord {
+impl<K, V> ContainerNode<K, V> where K: Str {
     fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
         let mut container = ContainerNode {
             items: Vec::with_capacity(CONTAINER_SIZE)
@@ -405,7 +406,7 @@ impl<K, V> ContainerNode<K, V> where K: Str, K: Ord {
     }
 }
 
-impl<K, V> AccessNode<K, V> where K: Str, K: Ord {
+impl<K, V> AccessNode<K, V> where K: Str {
     fn from_container(container: ContainerNode<K, V>, depth: usize) -> AccessNode<K, V> {
         let mut access_node = AccessNode {
             nodes: Box::new(unsafe { mem::zeroed() }),
@@ -477,18 +478,32 @@ impl<K, V> AccessNode<K, V> where K: Str, K: Ord {
     }
 }
 
-impl<K, V> Default for BurstTrieMap<K, V> where K: Str, K: Ord {
+impl<K, V, Q: ?Sized> Index<Q> for BurstTrieMap<K, V> where K: Str, Q: Str {
+    type Output = V;
+
+    fn index<'a>(&'a self, index: &Q) -> &'a V {
+        self.get(index).unwrap()
+    }
+}
+
+impl<K, V, Q: ?Sized> IndexMut<Q> for BurstTrieMap<K, V> where K: Str, Q: Str {
+    fn index_mut<'a>(&'a mut self, index: &Q) -> &'a mut V {
+        self.get_mut(index).unwrap()
+    }
+}
+
+impl<K, V> Default for BurstTrieMap<K, V> where K: Str {
     #[inline]
     fn default() -> BurstTrieMap<K, V> { BurstTrieMap::new() }
 }
 
-pub struct Iter<'a, K: 'a, V: 'a> where K: Str, K: Ord {
+pub struct Iter<'a, K: 'a, V: 'a> where K: Str {
     stack: Vec<&'a BurstTrieNode<K, V>>,
     container_iter: Option<slice::Iter<'a, (K, V)>>,
     remaining_len: usize
 }
 
-impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
+impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
@@ -541,13 +556,13 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str, K: Ord {
     }
 }
 
-pub struct IntoIter<K, V> where K: Str, K: Ord {
+pub struct IntoIter<K, V> where K: Str {
     stack: Vec<BurstTrieNode<K, V>>,
     container_iter: Option<vec::IntoIter<(K, V)>>,
     remaining_len: usize
 }
 
-impl<K, V> Iterator for IntoIter<K, V> where K: Str, K: Ord {
+impl<K, V> Iterator for IntoIter<K, V> where K: Str {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<(K, V)> {
@@ -747,6 +762,7 @@ mod tests {
         assert_eq!(m.insert("1", 3), Some(2));
         assert_eq!(m.insert("1", 4), Some(3));
     }
+
     #[test]
     fn test_pop() {
         let mut m = BurstTrieMap::new();
@@ -767,6 +783,18 @@ mod tests {
         assert!(m.get("2").is_none());
         assert!(m.get("9").is_none());
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn test_index() {
+        let mut m = BurstTrieMap::new();
+        m.insert("1", 2);
+        assert_eq!(m["1"], 2);
+        {
+            let ref_1 = &mut m["1"];
+            *ref_1 = 3;
+        }
+        assert_eq!(m["1"], 3);
     }
 }
 

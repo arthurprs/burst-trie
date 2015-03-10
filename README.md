@@ -14,15 +14,11 @@ It's specialized for string keys, specifically ASCII or UTF-8.
 
 # TODO
 
-It's a fairly long list right now
-
-* Iterators
-* Index
+* More Iterators
 * Range search
-* More tests
 * Set implementation
+* Deduplicate some code with macros
 * Performance
-
 
 # Benchmarks
 
