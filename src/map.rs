@@ -77,16 +77,58 @@ impl<K, V> BurstTrieMap<K, V> where K: Str, K: Ord {
     }
 
 
-    /// Returns a mutable reference to the value corresponding to the key.
+    /// Returns a reference to the value corresponding to the key.
+    ///
+    /// The key may be any borrowed form of the map's key type, but the ordering on the borrowed form must match the ordering on the key type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use burst_trie::BurstTrieMap;
+    ///
+    /// let mut a = BurstTrieMap::new();
+    /// a.insert("a", 0);
+    /// assert_eq!(a.get("a"), Some(&0));
+    /// assert_eq!(a.get("b"), None);
+    /// ```
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: Str {
         self.root.get(key, 0)
     }
 
-    /// Returns a reference to the value corresponding to the key.
+    /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// The key may be any borrowed form of the map's key type, but the ordering on the borrowed form must match the ordering on the key type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use burst_trie::BurstTrieMap;
+    ///
+    /// let mut a = BurstTrieMap::new();
+    /// a.insert("a", 0);
+    /// assert_eq!(a.get("a"), Some(&0));
+    /// assert_eq!(a.get("b"), None);
+    /// if let Some(mv) = a.get_mut("a") {
+    ///     *mv = 1;
+    /// }
+    /// assert_eq!(a.get("a"), Some(&1));
+    /// ```
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: Str {
         self.root.get_mut(key, 0)
     }
 
+    /// Returns true if the map contains a value for the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use burst_trie::BurstTrieMap;
+    ///
+    /// let mut a = BurstTrieMap::new();
+    /// a.insert("a", 0);
+    /// assert_eq!(a.contains_key("a"), true);
+    /// assert_eq!(a.contains_key("b"), false);
+    /// ```
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: Str {
         self.get(key).is_some()
     }
@@ -206,6 +248,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str, K: Ord  {
 
     #[inline(always)]
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: Str {
+        // FIXME: we probably want to do some node colapsing here or in a shrink_to_fit method
         match *self {
             BurstTrieNode::Empty => {
                 None
@@ -423,7 +466,6 @@ impl<K, V> AccessNode<K, V> where K: Str, K: Ord {
         }
     }
 }
-
 
 impl<K, V> Default for BurstTrieMap<K, V> where K: Str, K: Ord {
     #[inline]
