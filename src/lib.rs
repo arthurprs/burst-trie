@@ -1,8 +1,8 @@
 #![feature(core)]
 #![feature(collections)]
 #![feature(test)]
+#![feature(alloc)]
 
-extern crate core;
 extern crate collections;
 extern crate rand;
 #[cfg(test)]

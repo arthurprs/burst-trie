@@ -14,15 +14,15 @@ It's specialized for string keys, specifically ASCII or UTF-8.
 
 # TODO
 
-* More Iterators
-* Range search
+* Improve Iterators
+* Improve Range search
 * Set implementation
 * Deduplicate some code with macros
 * Performance
 
 # Benchmarks
 
-Benchmarks,  so pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
+Benchmarks, so pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
 
 |                                               |      |         |         | 
 |-----------------------------------------------|------|---------|---------| 
