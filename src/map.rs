@@ -6,7 +6,7 @@
 ///
 /// It's specialized for string keys, specifically ASCII or UTF-8.
 ///
-/// The Burst Trie was original described by S. Heinz.
+/// The Burst Trie was originaly described by S. Heinz.
 /// You can find the original paper in the internet by it's title
 /// "Burst Tries: A Fast, Efficient Data Structure for String Keys"
 
@@ -24,6 +24,7 @@ use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
 const CONTAINER_SIZE: usize = 64;
+const INIT_CONTAINER_SIZE: usize = 16;
 
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
@@ -323,7 +324,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str  {
 impl<K, V> ContainerNode<K, V> where K: Str {
     fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
         let mut container = ContainerNode {
-            items: Vec::with_capacity(CONTAINER_SIZE)
+            items: Vec::with_capacity(INIT_CONTAINER_SIZE)
         };
         container.items.push((key, value));
 
