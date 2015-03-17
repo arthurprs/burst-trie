@@ -14,53 +14,58 @@ It's specialized for string keys, specifically ASCII or UTF-8.
 
 # TODO
 
-* Improve Iterators
-* Improve Range search
+* Improve Iterators (reverse versions)
+* Improve Range search (reverse and mut versions)
 * Set implementation
 * Deduplicate some code with macros
 * Performance
 
 # Benchmarks
 
-Benchmarks, so pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
+Benchmarks are most of the time pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
 
-|                                               |      |         |         | 
-|-----------------------------------------------|------|---------|---------| 
-| map::bench::burst_get_medium_1000             | 189  | ns/iter | (1.82x) | 
-| map::bench::burst_get_medium_10000            | 275  | ns/iter | (1.65x) | 
-| map::bench::burst_get_medium_100000           | 591  | ns/iter | (1.62x) | 
-| map::bench::burst_get_prefix_medium_10000     | 320  | ns/iter | (3.53x) | 
-| map::bench::burst_get_prefix_medium_100000    | 644  | ns/iter | (3.12x) | 
-| map::bench::burst_get_seq_100000              | 248  | ns/iter | (4.23x) | 
-| map::bench::burst_get_short_1000              | 109  | ns/iter | (1.73x) | 
-| map::bench::burst_get_short_10000             | 156  | ns/iter | (1.87x) | 
-| map::bench::burst_get_short_100000            | 362  | ns/iter | (1.69x) | 
-| map::bench::burst_insert_medium_1000          | 239  | ns/iter | (1.77x) | 
-| map::bench::burst_insert_medium_10000         | 335  | ns/iter | (1.34x) | 
-| map::bench::burst_insert_medium_100000        | 385  | ns/iter | (1.30x) | 
-| map::bench::burst_insert_prefix_medium_10000  | 452  | ns/iter | (1.98x) | 
-| map::bench::burst_insert_prefix_medium_100000 | 595  | ns/iter | (1.79x) | 
-| map::bench::burst_insert_seq_100000           | 604  | ns/iter | (2.91x) | 
-| map::bench::burst_insert_short_1000           | 166  | ns/iter | (1.71x) | 
-| map::bench::burst_insert_short_10000          | 540  | ns/iter | (0.67x) | 
-| map::bench::burst_insert_short_100000         | 257  | ns/iter | (1.49x) | 
-| map::bench::btree_get_medium_1000             | 344  | ns/iter |         | 
-| map::bench::btree_get_medium_10000            | 454  | ns/iter |         | 
-| map::bench::btree_get_medium_100000           | 958  | ns/iter |         | 
-| map::bench::btree_get_prefix_medium_10000     | 1132 | ns/iter |         | 
-| map::bench::btree_get_prefix_medium_100000    | 2010 | ns/iter |         | 
-| map::bench::btree_get_seq_100000              | 1051 | ns/iter |         | 
-| map::bench::btree_get_short_1000              | 189  | ns/iter |         | 
-| map::bench::btree_get_short_10000             | 292  | ns/iter |         | 
-| map::bench::btree_get_short_100000            | 613  | ns/iter |         | 
-| map::bench::btree_insert_medium_1000          | 425  | ns/iter |         | 
-| map::bench::btree_insert_medium_10000         | 449  | ns/iter |         | 
-| map::bench::btree_insert_medium_100000        | 504  | ns/iter |         | 
-| map::bench::btree_insert_prefix_medium_10000  | 895  | ns/iter |         | 
-| map::bench::btree_insert_prefix_medium_100000 | 1066 | ns/iter |         | 
-| map::bench::btree_insert_seq_100000           | 1761 | ns/iter |         | 
-| map::bench::btree_insert_short_1000           | 284  | ns/iter |         | 
-| map::bench::btree_insert_short_10000          | 363  | ns/iter |         | 
-| map::bench::btree_insert_short_100000         | 383  | ns/iter |         | 
+| test                                          | ns/iter | Speedup | 
+|-----------------------------------------------|---------|---------| 
+| map::bench::burst_get_medium_1000             | 186     | 1.909   | 
+| map::bench::burst_get_medium_10000            | 270     | 1.985   | 
+| map::bench::burst_get_medium_100000           | 599     | 1.810   | 
+| map::bench::burst_get_prefix_medium_10000     | 315     | 4.270   | 
+| map::bench::burst_get_prefix_medium_100000    | 654     | 3.130   | 
+| map::bench::burst_get_seq_100000              | 245     | 4.302   | 
+| map::bench::burst_get_short_1000              | 105     | 1.781   | 
+| map::bench::burst_get_short_10000             | 156     | 1.859   | 
+| map::bench::burst_get_short_100000            | 371     | 1.709   | 
+| map::bench::burst_insert_medium_1000          | 242     | 1.760   | 
+| map::bench::burst_insert_medium_10000         | 279     | 1.609   | 
+| map::bench::burst_insert_medium_100000        | 393     | 1.318   | 
+| map::bench::burst_insert_prefix_medium_10000  | 456     | 2.211   | 
+| map::bench::burst_insert_prefix_medium_100000 | 615     | 1.792   | 
+| map::bench::burst_insert_seq_100000           | 593     | 2.771   | 
+| map::bench::burst_insert_short_1000           | 156     | 1.692   | 
+| map::bench::burst_insert_short_10000          | 383     | 0.953   | 
+| map::bench::burst_insert_short_100000         | 257     | 1.510   | 
+| map::bench::burst_iter_10000                  | 111310  | 1.102   | 
+| map::bench::burst_range_10000                 | 43580   | 1.416   | 
+| map::bench::btree_get_medium_1000             | 355     |         | 
+| map::bench::btree_get_medium_10000            | 536     |         | 
+| map::bench::btree_get_medium_100000           | 1084    |         | 
+| map::bench::btree_get_prefix_medium_10000     | 1345    |         | 
+| map::bench::btree_get_prefix_medium_100000    | 2047    |         | 
+| map::bench::btree_get_seq_100000              | 1054    |         | 
+| map::bench::btree_get_short_1000              | 187     |         | 
+| map::bench::btree_get_short_10000             | 290     |         | 
+| map::bench::btree_get_short_100000            | 634     |         | 
+| map::bench::btree_insert_medium_1000          | 426     |         | 
+| map::bench::btree_insert_medium_10000         | 449     |         | 
+| map::bench::btree_insert_medium_100000        | 518     |         | 
+| map::bench::btree_insert_prefix_medium_10000  | 1008    |         | 
+| map::bench::btree_insert_prefix_medium_100000 | 1102    |         | 
+| map::bench::btree_insert_seq_100000           | 1643    |         | 
+| map::bench::btree_insert_short_1000           | 264     |         | 
+| map::bench::btree_insert_short_10000          | 365     |         | 
+| map::bench::btree_insert_short_100000         | 388     |         | 
+| map::bench::btree_iter_10000                  | 122716  |         | 
+| map::bench::btree_range_10000                 | 61714   |         | 
+
 
 You can of course run it in your computer with ```cargo bench```
