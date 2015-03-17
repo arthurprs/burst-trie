@@ -15,11 +15,11 @@ use std::slice;
 use std::vec;
 use std::ptr;
 use std::boxed;
-use std::cmp;
 use std::collections::Bound;
 use std::cmp::Ordering;
 use std::default::Default;
 use std::ops::{Index, IndexMut};
+use std::collections::VecDeque;
 use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
@@ -510,6 +510,8 @@ pub struct Iter<'a, K: 'a, V: 'a> where K: Str {
     remaining_len: usize
 }
 
+impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where K: Str {}
+
 impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str {
     type Item = (&'a K, &'a V);
 
@@ -569,6 +571,9 @@ pub struct IntoIter<K, V> where K: Str {
     remaining_len: usize
 }
 
+
+impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: Str {}
+
 impl<K, V> Iterator for IntoIter<K, V> where K: Str {
     type Item = (K, V);
 
@@ -600,9 +605,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: Str {
                     // add to stack in reverse order
                     for i in (1..ALPHABET_SIZE + 1) {
                         let idx = ALPHABET_SIZE - i;
-                        let node = unsafe {
-                            ptr::read(nodes_ptr.offset(idx as isize))
-                        };
+                        let node = unsafe { ptr::read(nodes_ptr.offset(idx as isize)) };
                         match node {
                             BurstTrieNode::Container(_) |
                             BurstTrieNode::Access(_) => {
@@ -630,8 +633,8 @@ impl<K, V> Iterator for IntoIter<K, V> where K: Str {
 }
 
 pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: Str, Q: Str {
-    stack: Vec<(usize, &'a BurstTrieNode<K, V>)>,
-    container_iter: Option<(usize , slice::Iter<'a, (K, V)>)>,
+    stack: VecDeque<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
+    curr_item: Option<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
     min: Bound<&'a Q>,
     max: Bound<&'a Q>
 }
@@ -640,90 +643,62 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
 
     fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q> {
         let mut range = Range {
-            stack: vec![(0, root)],
-            container_iter: None,
+            stack: VecDeque::new(),
+            curr_item: None,
             min: min,
             max: max
         };
 
+        match *root {
+            BurstTrieNode::Container(ref container) =>
+                range.stack.push_back((root, 0, true, 0, container.items.len() as u16)),
+            BurstTrieNode::Access(_) =>
+                range.stack.push_back((root, 0, true, 0, ALPHABET_SIZE as u16)),
+            _ => return range
+        }
+
         range.find_min();
+        range.find_max();
 
         range
     }
 
     fn find_min(&mut self) {
-        let min_key;
-        let included;
-        match self.min {
-            Bound::Unbounded => {
-                return;
-            },
-            Bound::Included(key) => {
-                min_key = key;
-                included = true;
-            },
-            Bound::Excluded(key) => {
-                min_key = key;
-                included = false;
-            },
-        }
+        let (min_key, min_included) = match self.min {
+            Bound::Unbounded => return,
+            Bound::Included(key) => (key, true),
+            Bound::Excluded(key) => (key, false)
+        };
 
-        while let Some((depth, node)) = self.stack.pop() {
+        while let Some((node, depth, _, _, _)) = self.stack.pop_back() {
+            let depthsz = depth as usize;
             match *node {
                 BurstTrieNode::Container(ref container) => {
                     let res_bs = container.items.binary_search_by(|other| {
-                        other.0.as_slice()[depth..].cmp(&min_key.as_slice()[depth..])
+                        other.0.as_slice()[depthsz..].cmp(&min_key.as_slice()[depthsz..])
                     });
-                    let container_iter = match res_bs {
-                        Ok(pos) => {
-                            if included {
-                                container.items[pos..].iter()
-                            } else {
-                                container.items[pos + 1..].iter()
-                            }
-                        },
-                        Err(pos) => {
-                            container.items[pos..].iter()
-                        }
+                    let start_pos = match res_bs {
+                        Ok(pos) if ! min_included => pos + 1,
+                        Ok(pos) | Err(pos) => pos
                     };
-                    self.container_iter = Some((depth, container_iter));
+                    self.stack.push_back((node, depth, false, start_pos as u16, container.items.len() as u16));
                     // can only hit a container once
                     return;
                 },
                 BurstTrieNode::Access(ref access) => {
-                    if depth < min_key.as_slice().len() {
-                        let min_key_byte = min_key.as_slice().as_bytes()[depth] as usize;
-                        // add to stack in reverse order
-                        for i in (1..ALPHABET_SIZE + 1) {
-                            let idx = ALPHABET_SIZE - i;
-                            if idx < min_key_byte {
-                                // less is imediate break
-                                break;
-                            }
-                            match access.nodes[idx] {
-                                ref next_node @ BurstTrieNode::Container(_) |
-                                ref next_node @ BurstTrieNode::Access(_) => {
-                                    self.stack.push((depth + 1, next_node));
-                                },
-                                _ => ()
-                            }
+                    if depthsz < min_key.as_slice().len() {
+                        let min_key_byte = min_key.as_slice().as_bytes()[depthsz] as usize;
+                        self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
+                        match access.nodes[min_key_byte] {
+                            BurstTrieNode::Container(ref container) =>
+                                self.stack.push_back((&access.nodes[min_key_byte], depth + 1, false, 0, container.items.len() as u16)),
+                            BurstTrieNode::Access(_) =>
+                                self.stack.push_back((&access.nodes[min_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+                            _ => return // exit
                         }
-                    } else if included {
-                        // terminator included, re-add node to the stack and exit
-                        self.stack.push((depth, node));
-                        return;
                     } else {
-                        // terminator not included, just add all nodes to the stack in reverse order
-                        for i in (1..ALPHABET_SIZE + 1) {
-                            let idx = ALPHABET_SIZE - i;
-                            match access.nodes[idx] {
-                                ref next_node @ BurstTrieNode::Container(_) |
-                                ref next_node @ BurstTrieNode::Access(_) => {
-                                    self.stack.push((depth + 1, next_node));
-                                },
-                                _ => ()
-                            }
-                        }
+                        // re-add node to the stack with correct terminator and exit
+                        self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
                         return;
                     }
                 },
@@ -732,55 +707,85 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
         }
     }
 
-    // it's a static method so the borrow checker stays happy
-    #[inline(always)]
-    fn offer_next(max: &Bound<&Q>, key: &'a K, value: &'a V) -> Option<(&'a K, &'a V)> {
-        match *max {
-            Bound::Included(max_key) if key.as_slice() > max_key.as_slice() => {
-                return None;
-            },
-            Bound::Excluded(max_key) if key.as_slice() >= max_key.as_slice() => {
-                return None;
-            },
-            _ => {
-                return Some((key, value));
+    fn find_max(&mut self) {
+        let (max_key, max_included) = match self.max {
+            Bound::Unbounded => return,
+            Bound::Included(key) => (key, true),
+            Bound::Excluded(key) => (key, false)
+        };
+
+        while let Some((node, depth, terminator, start_pos, _)) = self.stack.pop_front() {
+            let depthsz = depth as usize;
+            match *node {
+                BurstTrieNode::Container(ref container) => {
+                    let res_bs = container.items.binary_search_by(|other| {
+                        other.0.as_slice()[depthsz..].cmp(&max_key.as_slice()[depthsz..])
+                    });
+                    let end_pos = match res_bs {
+                        Ok(pos) if max_included => pos + 1,
+                        Ok(pos) | Err(pos) => pos
+                    };
+                    self.stack.push_front((node, depth, false, start_pos, end_pos as u16));
+                    // can only hit a container once
+                    return;
+                },
+                BurstTrieNode::Access(ref access) => {
+                    if depthsz < max_key.as_slice().len() {
+                        let max_key_byte = max_key.as_slice().as_bytes()[depthsz] as usize;
+                        self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
+                        match access.nodes[max_key_byte] {
+                            BurstTrieNode::Container(ref container) =>
+                                self.stack.push_front((&access.nodes[max_key_byte], depth + 1, false, 0, container.items.len() as u16)),
+                            BurstTrieNode::Access(_) =>
+                                self.stack.push_front((&access.nodes[max_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+                            _ => return // exit
+                        }
+                    } else {
+                        // re-add node to the stack with correct terminator and exit
+                        self.stack.push_front((node, depth, max_included, 0, 0));
+                        return;
+                    }
+                },
+                _ => ()
             }
         }
     }
 
     fn find_next(&mut self) -> Option<(&'a K, &'a V)> {
-        if let Some((_, ref mut iter)) = self.container_iter {
-            let next = iter.next();
-            if let Some(&(ref key, ref value)) = next {
-                return Range::offer_next(&self.max, key, value);
+        if let Some((&BurstTrieNode::Container(ref container), _, _, ref mut start_pos, end_pos)) = self.curr_item {
+            if *start_pos < end_pos {
+                let (ref key, ref value) = container.items[*start_pos as usize];
+                *start_pos += 1; // advance iterator
+                return Some((key, value));
             }
         }
 
-        while let Some((depth, node)) = self.stack.pop() {
+        while let Some((node, depth, terminator, start_pos, end_pos)) = self.stack.pop_back() {
             match *node {
                 BurstTrieNode::Container(ref container) => {
-                    let mut iter = container.items.iter();
-                    let next = iter.next();
-                    mem::replace(&mut self.container_iter, Some((depth, iter))); 
-                    if let Some(&(ref key, ref value)) = next {
-                        return Range::offer_next(&self.max, key, value);
+                    if start_pos < end_pos {
+                        self.curr_item = Some((node, depth, terminator, start_pos + 1, end_pos));
+                        let (ref key, ref value) = container.items[start_pos as usize];
+                        return Some((key, value));
                     }
                 },
                 BurstTrieNode::Access(ref access) => {
                     // add to stack in reverse order
-                    for i in (1..ALPHABET_SIZE + 1) {
+                    for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
                         let idx = ALPHABET_SIZE - i;
                         match access.nodes[idx] {
-                            ref node @ BurstTrieNode::Container(_) |
-                            ref node @ BurstTrieNode::Access(_) => {
-                                self.stack.push((depth + 1, node));
-                            },
+                            BurstTrieNode::Container(ref container) =>
+                                self.stack.push_back((&access.nodes[idx], depth + 1, false, 0, container.items.len() as u16)),
+                            BurstTrieNode::Access(_) =>
+                                self.stack.push_back((&access.nodes[idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
                             _ => ()
                         }
                     }
 
-                    if let Some((ref key, ref value)) = access.terminator {
-                        return Range::offer_next(&self.max, key, value);
+                    if terminator {
+                        if let Some((ref key, ref value)) = access.terminator {
+                            return Some((key, value));
+                        }
                     }
                 },
                 _ => ()
@@ -794,14 +799,14 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
 impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: Str, Q: Str {
     type Item = (&'a K, &'a V);
 
-    #[inline]
+    #[inline(always)]
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
         self.find_next()
     }
 
-    #[inline]
+    #[inline(always)]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, None)
+        (self.stack.len(), None)
     }
 }
 
@@ -881,7 +886,35 @@ mod tests {
         assert_eq!(map.range(Bound::Excluded("2"), Bound::Excluded("3")).count(), 100000);
         assert_eq!(map.range(Bound::Included("1"), Bound::Included("2")).count(), 100000 + 2);
         assert_eq!(map.range(Bound::Included("2"), Bound::Included("3")).count(), 100000 + 1);
-        
+    }
+
+    #[test]
+    fn test_range2() {
+        use rand::{Rng, weak_rng};
+        use std::collections::{BTreeMap, Bound};
+
+        let mut rng = weak_rng();
+        let mut tree = BTreeMap::new();
+        let mut trie = BurstTrieMap::new();
+        let value = 0usize;
+
+        (0..10000).map(|_| {
+            let key_len = rng.gen_range(0, 100);
+            let key = rng.gen_ascii_chars().take(key_len).collect::<String>();
+            tree.insert(key.clone(), value);
+            trie.insert(key, value);
+        }).count();
+
+        let keys = tree.keys().collect::<Vec<_>>();
+        assert_eq!(keys, trie.keys().collect::<Vec<_>>());
+
+        let min1 = Bound::Included(keys[keys.len() / 4]);
+        let max1 = Bound::Excluded(keys[keys.len() - keys.len() / 4]);
+        let min2 = Bound::Included(keys[keys.len() / 4]);
+        let max2 = Bound::Excluded(keys[keys.len() - keys.len() / 4]);
+        for ((key1, _), (key2, _)) in tree.range(min1, max1).zip(trie.range(min2, max2)) {
+            assert_eq!(key1, key2);
+        }
     }
 
     #[test]
@@ -1044,27 +1077,27 @@ mod bench {
     use super::BurstTrieMap;
     use bench_macros::BENCH_SEED;
 
-    // map_get_rnd_bench!(burst_get_short_1000, 5, 15, 1000, BurstTrieMap);
-    // map_get_rnd_bench!(burst_get_short_10000, 5, 15, 10000, BurstTrieMap);
-    // map_get_rnd_bench!(burst_get_short_100000, 5, 15, 100000, BurstTrieMap);
-    // map_get_rnd_bench!(burst_get_medium_1000, 20, 100, 1000, BurstTrieMap);
-    // map_get_rnd_bench!(burst_get_medium_10000, 20, 100, 10000, BurstTrieMap);
-    // map_get_rnd_bench!(burst_get_medium_100000, 20, 100, 100000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_short_1000, 5, 15, 1000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_short_10000, 5, 15, 10000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_short_100000, 5, 15, 100000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_medium_1000, 20, 100, 1000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_medium_10000, 20, 100, 10000, BurstTrieMap);
-    // map_insert_rnd_bench!(burst_insert_medium_100000, 20, 100, 100000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_short_1000, 5, 15, 1000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_short_10000, 5, 15, 10000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_short_100000, 5, 15, 100000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_medium_1000, 20, 100, 1000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_medium_10000, 20, 100, 10000, BurstTrieMap);
+    map_get_rnd_bench!(burst_get_medium_100000, 20, 100, 100000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_short_1000, 5, 15, 1000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_short_10000, 5, 15, 10000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_short_100000, 5, 15, 100000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_medium_1000, 20, 100, 1000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_medium_10000, 20, 100, 10000, BurstTrieMap);
+    map_insert_rnd_bench!(burst_insert_medium_100000, 20, 100, 100000, BurstTrieMap);
 
-    // map_get_rnd_bench!(burst_get_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    // map_get_rnd_bench!(burst_get_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
-    // map_insert_rnd_bench!(burst_insert_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    // map_insert_rnd_bench!(burst_insert_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
+    map_get_rnd_bench!(burst_get_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
+    map_get_rnd_bench!(burst_get_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
+    map_insert_rnd_bench!(burst_insert_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
+    map_insert_rnd_bench!(burst_insert_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
 
 
-    // map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
-    // map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
+    map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
+    map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
 
     map_iter_bench!(burst_iter_10000, 20, 100, 10000, BurstTrieMap);
     map_range_bench!(burst_range_10000, 20, 100, 10000, BurstTrieMap);
@@ -1072,27 +1105,27 @@ mod bench {
 
 
     use std::collections::BTreeMap;
-    // map_get_rnd_bench!(btree_get_short_1000, 5, 15, 1000, BTreeMap);
-    // map_get_rnd_bench!(btree_get_short_10000, 5, 15, 10000, BTreeMap);
-    // map_get_rnd_bench!(btree_get_short_100000, 5, 15, 100000, BTreeMap);
-    // map_get_rnd_bench!(btree_get_medium_1000, 20, 100, 1000, BTreeMap);
-    // map_get_rnd_bench!(btree_get_medium_10000, 20, 100, 10000, BTreeMap);
-    // map_get_rnd_bench!(btree_get_medium_100000, 20, 100, 100000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_short_1000, 5, 15, 1000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_short_10000, 5, 15, 10000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_short_100000, 5, 15, 100000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_medium_1000, 20, 100, 1000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_medium_10000, 20, 100, 10000, BTreeMap);
-    // map_insert_rnd_bench!(btree_insert_medium_100000, 20, 100, 100000, BTreeMap);
+    map_get_rnd_bench!(btree_get_short_1000, 5, 15, 1000, BTreeMap);
+    map_get_rnd_bench!(btree_get_short_10000, 5, 15, 10000, BTreeMap);
+    map_get_rnd_bench!(btree_get_short_100000, 5, 15, 100000, BTreeMap);
+    map_get_rnd_bench!(btree_get_medium_1000, 20, 100, 1000, BTreeMap);
+    map_get_rnd_bench!(btree_get_medium_10000, 20, 100, 10000, BTreeMap);
+    map_get_rnd_bench!(btree_get_medium_100000, 20, 100, 100000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_short_1000, 5, 15, 1000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_short_10000, 5, 15, 10000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_short_100000, 5, 15, 100000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_medium_1000, 20, 100, 1000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_medium_10000, 20, 100, 10000, BTreeMap);
+    map_insert_rnd_bench!(btree_insert_medium_100000, 20, 100, 100000, BTreeMap);
 
-    // map_get_rnd_bench!(btree_get_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    // map_get_rnd_bench!(btree_get_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
-    // map_insert_rnd_bench!(btree_insert_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    // map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
+    map_get_rnd_bench!(btree_get_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
+    map_get_rnd_bench!(btree_get_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
+    map_insert_rnd_bench!(btree_insert_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
+    map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
 
 
-    // map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
-    // map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
+    map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
+    map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
 
 
     map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);

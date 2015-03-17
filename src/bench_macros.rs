@@ -149,8 +149,6 @@ macro_rules! map_iter_bench {
                     test::black_box(value);
                 }
             });
-
-            test::black_box(map);
         }
     );
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident) => (
