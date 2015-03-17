@@ -4,13 +4,17 @@ Implements an ordered map as a BurstTrie. It's a very fast Trie variant speciali
 ***This is a work in progress***
 
 This structure achieves better performance than a BTree implementations for common operations while
-still allowing range scanning and ordered iteration. Performance wise it's usually 50+% faster than
-the std lib BTreeMap for random keys but it pulls ahead rapdily if keys have common prefixes.
+still allowing range scanning and ordered iteration.
 
-It's specialized for string keys, specifically ASCII or UTF-8.
+Performance it's usually 50%+ faster than the std lib BTreeMap for random keys (worst case) but it pulls ahead rapdily if keys have common prefixes (See [benchmarks](#benchmarks)).
+Memory wise it consumes 90~150% the equivalent BTreeMap. Although on worst case scenarios (uniformelly distributed random keys) it can take up to 300% as much memory as a BTreeMap.
 
 *The Burst Trie was original described by S. Heinz. You can find the original paper in the internet by it's title
 "Burst Tries: A Fast, Efficient Data Structure for String Keys"*
+
+### Limitations
+
+It's specialized for string keys, specifically ASCII or UTF-8.
 
 # TODO
 
@@ -23,6 +27,9 @@ It's specialized for string keys, specifically ASCII or UTF-8.
 # Benchmarks
 
 Benchmarks are most of the time pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
+
+Note: unless stated as "seq" all benchmarks use uniformelly distributed random keys, which are the worst case scenario for the BurstTrie. Still, the average performance is very good.
+
 
 | test                                          | ns/iter | Speedup | 
 |-----------------------------------------------|---------|---------| 
