@@ -9,8 +9,8 @@ Implements an ordered map as a Burst Trie. It's a very fast Trie variant special
 This structure achieves better performance than a BTree implementations for common operations while
 still allowing range scanning and ordered iteration.
 
-Performance it's usually 50%+ faster than the std lib BTreeMap for random keys (worst case) but it pulls ahead rapdily if keys have common prefixes (See [benchmarks](#benchmarks)).
-Memory wise it consumes 90~150% the equivalent BTreeMap. Although on worst case scenarios (uniformelly distributed random keys) it can take up to 300% as much memory as a BTreeMap.
+Performance is usually 50%+ better than the std lib BTreeMap for random keys (worst case) but it quickly pulls ahead if keys have common prefixes (See [benchmarks](#benchmarks)).
+Memory wise it consumes 90~150% memory of the equivalent BTreeMap. Although on worst case scenarios (uniformelly distributed random keys) it can take up to 300% as much memory as a BTreeMap.
 
 *The Burst Trie was original described by S. Heinz. You can find the original paper in the internet by it's title
 "Burst Tries: A Fast, Efficient Data Structure for String Keys"*
