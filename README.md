@@ -1,5 +1,8 @@
 # BurstTrie
-Implements an ordered map as a BurstTrie. It's a very fast Trie variant specialized for Str types.
+
+[![Build Status](https://travis-ci.org/arthurprs/burst-trie.svg)](https://travis-ci.org/arthurprs/burst-trie)
+
+Implements an ordered map as a Burst Trie. It's a very fast Trie variant specialized for Str types.
 
 ***This is a work in progress***
 
