@@ -1,16 +1,8 @@
-#![feature(core)]
-#![feature(collections)]
-#![feature(test)]
-#![feature(alloc)]
-
-extern crate collections;
+#[cfg(test)]
 extern crate rand;
-#[cfg(test)]
-extern crate test;
+// #[cfg(test)]
+// #[macro_use]
+// mod bench_macros;
 
-#[cfg(test)]
-#[macro_use]
-mod bench_macros;
-pub mod map;
-
+mod map;
 pub use map::*;
