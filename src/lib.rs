@@ -1,6 +1,7 @@
 #![feature(test)]
 #![feature(collections)]
 #![feature(alloc)]
+#![feature(box_patterns)]
 
 #[cfg(test)]
 extern crate test;

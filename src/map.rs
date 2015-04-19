@@ -13,8 +13,6 @@
 use std::mem;
 use std::slice;
 use std::vec;
-use std::ptr;
-use std::boxed;
 use std::collections::Bound;
 use std::cmp::Ordering;
 use std::default::Default;
@@ -24,7 +22,6 @@ use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
 const CONTAINER_SIZE: usize = 64;
-const INIT_CONTAINER_SIZE: usize = 16;
 
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
@@ -37,7 +34,7 @@ pub struct BurstTrieMap<K, V> where K: AsRef<str> {
 enum BurstTrieNode<K, V> where K: AsRef<str> {
     Empty,
     Container(ContainerNode<K, V>),
-    Access(AccessNode<K, V>)
+    Access(Box<AccessNode<K, V>>)
 }
 
 struct ContainerNode<K, V> where K: AsRef<str> {
@@ -45,7 +42,7 @@ struct ContainerNode<K, V> where K: AsRef<str> {
 }
 
 struct AccessNode<K, V> where K: AsRef<str> {
-    nodes: Box<[BurstTrieNode<K, V>; ALPHABET_SIZE]>,
+    nodes: [BurstTrieNode<K, V>; ALPHABET_SIZE],
     terminator: Option<(K, V)>
 }
 
@@ -324,7 +321,7 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
 impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
     fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
         let mut container = ContainerNode {
-            items: Vec::with_capacity(INIT_CONTAINER_SIZE)
+            items: Vec::new()
         };
         container.items.push((key, value));
 
@@ -415,11 +412,11 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
 }
 
 impl<K, V> AccessNode<K, V> where K: AsRef<str> {
-    fn from_container(container: ContainerNode<K, V>, depth: usize) -> AccessNode<K, V> {
-        let mut access_node = AccessNode {
-            nodes: Box::new(unsafe { mem::zeroed() }),
+    fn from_container(container: ContainerNode<K, V>, depth: usize) -> Box<AccessNode<K, V>> {
+        let mut access_node = Box::new(AccessNode {
+            nodes: unsafe { mem::zeroed() },
             terminator: None
-        };
+        });
         for (key, value) in container.items {
             access_node.insert(key, value, depth);
         }
@@ -597,15 +594,11 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
                         return next;
                     }
                 },
-                BurstTrieNode::Access(access) => {
-                    // move unsafelly since rust static arrays won't allow partial moves
-                    let nodes_ptr: *const BurstTrieNode<K, V> = unsafe {
-                        mem::transmute(boxed::into_raw(access.nodes))
-                    };
+                BurstTrieNode::Access(box mut access) => {
                     // add to stack in reverse order
                     for i in (1..ALPHABET_SIZE + 1) {
                         let idx = ALPHABET_SIZE - i;
-                        let node = unsafe { ptr::read(nodes_ptr.offset(idx as isize)) };
+                        let node = mem::replace(&mut access.nodes[idx], BurstTrieNode::Empty);
                         match node {
                             BurstTrieNode::Container(_) |
                             BurstTrieNode::Access(_) => {
@@ -614,6 +607,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
                             _ => ()
                         }
                     }
+
 
                     if access.terminator.is_some() {
                         self.remaining_len -= 1;
