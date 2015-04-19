@@ -29,27 +29,27 @@ const INIT_CONTAINER_SIZE: usize = 16;
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
 /// See module level docs for details.
-pub struct BurstTrieMap<K, V> where K: Str {
+pub struct BurstTrieMap<K, V> where K: AsRef<str> {
     root: BurstTrieNode<K, V>,
     len: usize
 }
 
-enum BurstTrieNode<K, V> where K: Str {
+enum BurstTrieNode<K, V> where K: AsRef<str> {
     Empty,
     Container(ContainerNode<K, V>),
     Access(AccessNode<K, V>)
 }
 
-struct ContainerNode<K, V> where K: Str {
+struct ContainerNode<K, V> where K: AsRef<str> {
     items: Vec<(K, V)>
 }
 
-struct AccessNode<K, V> where K: Str {
+struct AccessNode<K, V> where K: AsRef<str> {
     nodes: Box<[BurstTrieNode<K, V>; ALPHABET_SIZE]>,
     terminator: Option<(K, V)>
 }
 
-impl<K, V> BurstTrieMap<K, V> where K: Str {
+impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     
     /// Returns a new empty BurstTrieMap
     pub fn new() -> BurstTrieMap<K, V> {
@@ -98,7 +98,7 @@ impl<K, V> BurstTrieMap<K, V> where K: Str {
     /// assert_eq!(a.get("a"), Some(&0));
     /// assert_eq!(a.get("b"), None);
     /// ```
-    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: Str {
+    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: AsRef<str> {
         self.root.get(key, 0)
     }
 
@@ -120,7 +120,7 @@ impl<K, V> BurstTrieMap<K, V> where K: Str {
     /// }
     /// assert_eq!(a.get("a"), Some(&1));
     /// ```
-    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: Str {
+    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: AsRef<str> {
         self.root.get_mut(key, 0)
     }
 
@@ -136,7 +136,7 @@ impl<K, V> BurstTrieMap<K, V> where K: Str {
     /// assert_eq!(a.contains_key("a"), true);
     /// assert_eq!(a.contains_key("b"), false);
     /// ```
-    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: Str {
+    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: AsRef<str> {
         self.get(key).is_some()
     }
 
@@ -155,7 +155,7 @@ impl<K, V> BurstTrieMap<K, V> where K: Str {
     /// assert_eq!(a.remove("a"), Some(0));
     /// assert_eq!(a.len(), 0);
     /// ```
-    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V> where Q: Str {
+    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V> where Q: AsRef<str> {
         let opt_old_value = self.root.remove(key, 0);
         if opt_old_value.is_some() {
             self.len -= 1;
@@ -235,12 +235,12 @@ impl<K, V> BurstTrieMap<K, V> where K: Str {
         self.iter().map(map_fn)
     }
 
-    pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q> where Q: Str {
+    pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q> where Q: AsRef<str> {
         Range::new(&self.root, min, max)
     }
 }
 
-impl<K, V> BurstTrieNode<K, V> where K: Str  {
+impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
 
     #[inline]
     fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
@@ -266,7 +266,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str  {
     }
 
     #[inline(always)]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: Str {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
         // FIXME: we probably want to do some node colapsing here or in a shrink_to_fit method
         match *self {
             BurstTrieNode::Empty => {
@@ -282,7 +282,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str  {
     }
 
     #[inline(always)]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: Str {
+    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         match *self {
             BurstTrieNode::Empty => {
                 None
@@ -297,7 +297,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str  {
     }
 
     #[inline(always)]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: Str {
+    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
         match *self {
             BurstTrieNode::Empty => {
                 None
@@ -321,7 +321,7 @@ impl<K, V> BurstTrieNode<K, V> where K: Str  {
     }
 }
 
-impl<K, V> ContainerNode<K, V> where K: Str {
+impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
     fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
         let mut container = ContainerNode {
             items: Vec::with_capacity(INIT_CONTAINER_SIZE)
@@ -337,7 +337,7 @@ impl<K, V> ContainerNode<K, V> where K: Str {
         // helps in seq insert and node bursting
         let seq_insert = match self.items.last_mut() {
             Some(&mut (ref last_key, ref mut last_value)) =>
-                match last_key.as_slice()[depth..].cmp(&key.as_slice()[depth..]) {
+                match last_key.as_ref()[depth..].cmp(&key.as_ref()[depth..]) {
                     Ordering::Equal => {
                         return Some(mem::replace(last_value, value));
                     },
@@ -352,7 +352,7 @@ impl<K, V> ContainerNode<K, V> where K: Str {
         } else {
             // binary search doesn't have to check the last element due to the previous
             let res_bs = self.items.init().binary_search_by(|other| {
-                other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
+                other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
             });
             match res_bs {
                 Ok(pos) => {
@@ -370,9 +370,9 @@ impl<K, V> ContainerNode<K, V> where K: Str {
 
 
     #[inline]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: Str {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
         let res_bs = self.items.binary_search_by(|other| {
-            other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
+            other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         match res_bs {
             Ok(pos) => Some(self.items.remove(pos).1),
@@ -381,11 +381,11 @@ impl<K, V> ContainerNode<K, V> where K: Str {
     }
 
     #[inline]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: Str {
+    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         // FIXME: binary search is doing bounds checking internally ;/
         // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = self.items.binary_search_by(|other| {
-            other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
+            other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         if let Ok(pos) = res_bs {
             Some(unsafe { &self.items.get_unchecked(pos).1 })
@@ -395,11 +395,11 @@ impl<K, V> ContainerNode<K, V> where K: Str {
     }
 
     #[inline]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: Str {
+    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
         // FIXME: binary search is doing bounds checking internally ;/
         // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = self.items.binary_search_by(|other| {
-            other.0.as_slice()[depth..].cmp(&key.as_slice()[depth..])
+            other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         if let Ok(pos) = res_bs {
             Some(unsafe { &mut self.items.get_unchecked_mut(pos).1 })
@@ -414,7 +414,7 @@ impl<K, V> ContainerNode<K, V> where K: Str {
     }
 }
 
-impl<K, V> AccessNode<K, V> where K: Str {
+impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn from_container(container: ContainerNode<K, V>, depth: usize) -> AccessNode<K, V> {
         let mut access_node = AccessNode {
             nodes: Box::new(unsafe { mem::zeroed() }),
@@ -429,8 +429,8 @@ impl<K, V> AccessNode<K, V> where K: Str {
     #[inline]
     fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
         // depth is always <= key.len
-        if depth < key.as_slice().len() {
-            let idx = key.as_slice().as_bytes()[depth] as usize;
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].insert(key, value, depth + 1)
         } else if let Some((_, ref mut old_value)) = self.terminator {
@@ -443,9 +443,9 @@ impl<K, V> AccessNode<K, V> where K: Str {
 
 
     #[inline]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: Str {
-        if depth < key.as_slice().len() {
-            let idx = key.as_slice().as_bytes()[depth] as usize;
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].remove(key, depth + 1)
         } else if let Some((_, old_value)) = self.terminator.take() {
@@ -456,9 +456,9 @@ impl<K, V> AccessNode<K, V> where K: Str {
     }
 
     #[inline]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: Str {
-        if depth < key.as_slice().len() {
-            let idx = key.as_slice().as_bytes()[depth] as usize;
+    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].get(key, depth + 1)
         } else {
@@ -471,9 +471,9 @@ impl<K, V> AccessNode<K, V> where K: Str {
     }
 
     #[inline]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: Str {
-        if depth < key.as_slice().len() {
-            let idx = key.as_slice().as_bytes()[depth] as usize;
+    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].get_mut(key, depth + 1)
         } else {
@@ -486,34 +486,34 @@ impl<K, V> AccessNode<K, V> where K: Str {
     }
 }
 
-impl<K, V, Q: ?Sized> Index<Q> for BurstTrieMap<K, V> where K: Str, Q: Str {
+impl<'a, K, V, Q: ?Sized> Index<&'a Q> for BurstTrieMap<K, V> where K: AsRef<str>, Q: AsRef<str> {
     type Output = V;
 
-    fn index<'a>(&'a self, index: &Q) -> &'a V {
+    fn index(&self, index: &Q) -> &V {
         self.get(index).unwrap()
     }
 }
 
-impl<K, V, Q: ?Sized> IndexMut<Q> for BurstTrieMap<K, V> where K: Str, Q: Str {
-    fn index_mut<'a>(&'a mut self, index: &Q) -> &'a mut V {
+impl<'a, K, V, Q: ?Sized> IndexMut<&'a Q> for BurstTrieMap<K, V> where K: AsRef<str>, Q: AsRef<str> {
+    fn index_mut(&mut self, index: &Q) -> &mut V {
         self.get_mut(index).unwrap()
     }
 }
 
-impl<K, V> Default for BurstTrieMap<K, V> where K: Str {
+impl<K, V> Default for BurstTrieMap<K, V> where K: AsRef<str> {
     #[inline]
     fn default() -> BurstTrieMap<K, V> { BurstTrieMap::new() }
 }
 
-pub struct Iter<'a, K: 'a, V: 'a> where K: Str {
+pub struct Iter<'a, K: 'a, V: 'a> where K: AsRef<str> {
     stack: Vec<&'a BurstTrieNode<K, V>>,
     container_iter: Option<slice::Iter<'a, (K, V)>>,
     remaining_len: usize
 }
 
-impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where K: Str {}
+impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where K: AsRef<str> {}
 
-impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str {
+impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
@@ -566,16 +566,15 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Str {
     }
 }
 
-pub struct IntoIter<K, V> where K: Str {
+pub struct IntoIter<K, V> where K: AsRef<str> {
     stack: Vec<BurstTrieNode<K, V>>,
     container_iter: Option<vec::IntoIter<(K, V)>>,
     remaining_len: usize
 }
 
+impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: AsRef<str> {}
 
-impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: Str {}
-
-impl<K, V> Iterator for IntoIter<K, V> where K: Str {
+impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<(K, V)> {
@@ -633,14 +632,14 @@ impl<K, V> Iterator for IntoIter<K, V> where K: Str {
     }
 }
 
-pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: Str, Q: Str {
+pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: AsRef<str>, Q: AsRef<str> {
     stack: VecDeque<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
     curr_item: Option<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
     min: Bound<&'a Q>,
     max: Bound<&'a Q>
 }
 
-impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
+impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
 
     fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q> {
         let mut range = Range {
@@ -676,7 +675,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
             match *node {
                 BurstTrieNode::Container(ref container) => {
                     let res_bs = container.items.binary_search_by(|other| {
-                        other.0.as_slice()[depthsz..].cmp(&min_key.as_slice()[depthsz..])
+                        other.0.as_ref()[depthsz..].cmp(&min_key.as_ref()[depthsz..])
                     });
                     let start_pos = match res_bs {
                         Ok(pos) if ! min_included => pos + 1,
@@ -687,8 +686,8 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
                     return;
                 },
                 BurstTrieNode::Access(ref access) => {
-                    if depthsz < min_key.as_slice().len() {
-                        let min_key_byte = min_key.as_slice().as_bytes()[depthsz] as usize;
+                    if depthsz < min_key.as_ref().len() {
+                        let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
                         self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
                         match access.nodes[min_key_byte] {
                             BurstTrieNode::Container(ref container) =>
@@ -720,7 +719,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
             match *node {
                 BurstTrieNode::Container(ref container) => {
                     let res_bs = container.items.binary_search_by(|other| {
-                        other.0.as_slice()[depthsz..].cmp(&max_key.as_slice()[depthsz..])
+                        other.0.as_ref()[depthsz..].cmp(&max_key.as_ref()[depthsz..])
                     });
                     let end_pos = match res_bs {
                         Ok(pos) if max_included => pos + 1,
@@ -731,8 +730,8 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
                     return;
                 },
                 BurstTrieNode::Access(ref access) => {
-                    if depthsz < max_key.as_slice().len() {
-                        let max_key_byte = max_key.as_slice().as_bytes()[depthsz] as usize;
+                    if depthsz < max_key.as_ref().len() {
+                        let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
                         self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
                         match access.nodes[max_key_byte] {
                             BurstTrieNode::Container(ref container) =>
@@ -797,7 +796,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: Str, Q: Str {
     }
 }
 
-impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: Str, Q: Str {
+impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
     type Item = (&'a K, &'a V);
 
     #[inline(always)]
@@ -814,7 +813,7 @@ impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: Str, Q: Str {
 #[cfg(test)]
 mod tests {
     use super::BurstTrieMap;
-    use collections::Bound;
+    use std::collections::Bound;
     use rand::*;
 
     #[test]
