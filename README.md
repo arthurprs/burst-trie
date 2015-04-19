@@ -10,7 +10,7 @@ This structure achieves better performance than a BTree implementations for comm
 still allowing range scanning and ordered iteration.
 
 Performance is usually 50%+ better than the std lib BTreeMap for random keys (worst case) but it quickly pulls ahead if keys have common prefixes (See [benchmarks](#benchmarks)).
-Memory wise it consumes 90~150% memory of the equivalent BTreeMap. Although on worst case scenarios (uniformelly distributed random keys) it can take up to 300% as much memory as a BTreeMap.
+Memory wise it consumes 90~140% memory of the equivalent BTreeMap.
 
 *The Burst Trie was original described by S. Heinz. You can find the original paper in the internet by it's title
 "Burst Tries: A Fast, Efficient Data Structure for String Keys"*
@@ -29,7 +29,7 @@ It's specialized for string keys, specifically ASCII or UTF-8.
 
 # Benchmarks
 
-Benchmarks are most of the time pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get it over with and find out if it's useless or not.
+Benchmarks are most of the time pointless. But I figure the only reason to use this over the stdlib BTree implementation is speed. So let's get this over with and find out if it's useless or not.
 
 Note: unless stated as "seq" all benchmarks use uniformelly distributed random keys, which are the worst case scenario for the BurstTrie. Still, the average performance is very good.
 
