@@ -56,7 +56,6 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
         }
     }
 
-
     /// Inserts a key-value pair from the map. If the key already had a value
     /// present in the map, that value is returned. Otherwise, `None` is returned.
     ///
@@ -458,12 +457,10 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].get(key, depth + 1)
+        } else if let Some((_, ref v)) = self.terminator {
+            Some(v)
         } else {
-            if let Some((_, ref v)) = self.terminator {
-                Some(v)
-            } else {
-                None
-            }
+            None
         }
     }
 
@@ -473,12 +470,10 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             self.nodes[idx].get_mut(key, depth + 1)
+        } else if let Some((_, ref mut v)) = self.terminator {
+            Some(v)
         } else {
-            if let Some((_, ref mut v)) = self.terminator {
-                Some(v)
-            } else {
-                None
-            }
+            None
         }
     }
 }
@@ -828,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn test_range() {
+    fn test_range1() {
         let mut map = BurstTrieMap::new();
 
         for i in (100000..999999) {
@@ -874,7 +869,6 @@ mod tests {
         assert_eq!(map.range(Bound::Excluded("1"), Bound::Unbounded).count(), (999999 - 100000) + 1);
         assert_eq!(map.range(Bound::Included("2"), Bound::Unbounded).count(), (999999 - 100000) + 1 - 100000);
         assert_eq!(map.range(Bound::Excluded("2"), Bound::Unbounded).count(), (999999 - 100000) - 100000);
-
         // max specified
         assert_eq!(map.range(Bound::Excluded("1"), Bound::Excluded("2")).count(), 100000);
         assert_eq!(map.range(Bound::Excluded("2"), Bound::Excluded("3")).count(), 100000);
@@ -902,12 +896,16 @@ mod tests {
         let keys = tree.keys().collect::<Vec<_>>();
         assert_eq!(keys, trie.keys().collect::<Vec<_>>());
 
-        let min1 = Bound::Included(keys[keys.len() / 4]);
-        let max1 = Bound::Excluded(keys[keys.len() - keys.len() / 4]);
-        let min2 = Bound::Included(keys[keys.len() / 4]);
-        let max2 = Bound::Excluded(keys[keys.len() - keys.len() / 4]);
-        for ((key1, _), (key2, _)) in tree.range(min1, max1).zip(trie.range(min2, max2)) {
-            assert_eq!(key1, key2);
+        for _ in (0..1000) {
+            let x0 = rng.gen_range(0usize, keys.len());
+            let x1 = rng.gen_range(x0, keys.len());
+            let min1 = Bound::Included(keys[x0]);
+            let max1 = Bound::Excluded(keys[x1]);
+            let min2 = Bound::Included(keys[x0]);
+            let max2 = Bound::Excluded(keys[x1]);
+            for ((key1, _), (key2, _)) in tree.range(min1, max1).zip(trie.range(min2, max2)) {
+                assert_eq!(key1, key2);
+            }
         }
     }
 
@@ -964,16 +962,17 @@ mod tests {
     #[test]
     fn test_correctness() {
         let mut rng = weak_rng();
-        for _ in (0..5) {
+        for _ in (0..10) {
             let mut trie = BurstTrieMap::new();
-            for _ in (0..1000) {
-                let key = rng.gen_ascii_chars().take(thread_rng().gen_range(1usize, 1000)).collect::<String>();
+            for _ in (0..10000) {
+                let key_len = rng.gen_range(1usize, 1000);
+                let key = rng.gen_ascii_chars().take(key_len).collect::<String>();
                 let value = rng.gen::<usize>();
                 trie.insert(key.clone(), value);
                 if let Some(r_value) = trie.get(&key) {
                     assert_eq!(value, *r_value);
                 } else {
-                    assert!(false);
+                    panic!("key: {} not found", key);
                 }
             }
         }
