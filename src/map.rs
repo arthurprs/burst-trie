@@ -16,12 +16,12 @@ use std::vec;
 use std::ptr;
 use std::convert::AsRef;
 // use std::collections::Bound;
-use std::collections::VecDeque;
+// use std::collections::VecDeque;
 use std::cmp::Ordering;
 use std::default::Default;
 use std::ops::{Index, IndexMut};
 use std::iter::Map;
-use std::rc::{self, Rc};
+use std::rc::Rc;
 use std::cell::UnsafeCell;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
@@ -253,7 +253,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
         self.iter().map(map_fn)
     }
 
-    // pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q> where Q: AsRef<str> {
+    // pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q: ?Sized> where Q: AsRef<str> {
     //     Range::new(&self.root, min, max)
     // }
 }
@@ -547,25 +547,51 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
         }
     }
 
+    // #[inline]
+    // fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
+    //     if depth < key.as_ref().len() {
+    //         let idx = key.as_ref().as_bytes()[depth] as usize;
+    //         debug_assert!(idx < ALPHABET_SIZE);
+    //         match self.nodes[idx] {
+    //             BurstTrieNode::Access(ref access) =>
+    //                 access.get(key, depth + 1),
+    //             BurstTrieNode::Bucket(ref bucket) =>
+    //                 bucket.get(key, depth + 1),
+    //             BurstTrieNode::Hybrid(ref bucket_rc_cell) =>
+    //                 unsafe { (& *bucket_rc_cell.get()).get(key, depth) },
+    //             _ => unreachable!()
+    //         }
+    //     } else {
+    //         if let Some((_, ref v)) = self.terminator {
+    //             Some(v)
+    //         } else {
+    //             None
+    //         }
+    //     }
+    // }
     #[inline]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
-        if depth < key.as_ref().len() {
-            let idx = key.as_ref().as_bytes()[depth] as usize;
-            debug_assert!(idx < ALPHABET_SIZE);
-            match self.nodes[idx] {
-                BurstTrieNode::Access(ref access) =>
-                    access.get(key, depth + 1),
-                BurstTrieNode::Bucket(ref bucket) =>
-                    bucket.get(key, depth + 1),
-                BurstTrieNode::Hybrid(ref bucket_rc_cell) =>
-                    unsafe { (& *bucket_rc_cell.get()).get(key, depth) },
-                _ => unreachable!()
-            }
-        } else {
-            if let Some((_, ref v)) = self.terminator {
-                Some(v)
+    fn get<Q: ?Sized>(&self, key: &Q, mut depth: usize) -> Option<&V> where Q: AsRef<str> {
+        let mut this_access = self;
+
+        loop {
+            if depth < key.as_ref().len() {
+                let idx = key.as_ref().as_bytes()[depth] as usize;
+                debug_assert!(idx < ALPHABET_SIZE);
+                match this_access.nodes[idx] {
+                    BurstTrieNode::Access(ref access) => {
+                        this_access = access;
+                        depth += 1;
+                    },
+                    BurstTrieNode::Bucket(ref bucket) =>
+                        return bucket.get(key, depth + 1),
+                    BurstTrieNode::Hybrid(ref bucket_rc_cell) =>
+                        return unsafe { (& *bucket_rc_cell.get()).get(key, depth) },
+                    _ => unreachable!()
+                }
+            } else if let Some((_, ref v)) = this_access.terminator {
+                return Some(v)
             } else {
-                None
+                return None
             }
         }
     }
@@ -769,16 +795,16 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
     }
 }
 
-// pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: AsRef<str>, Q: AsRef<str> {
+// pub struct Range<'a, K: 'a, V: 'a, Q: 'a> where K: AsRef<str>, Q: AsRef<str> {
 //     stack: VecDeque<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
 //     curr_item: Option<(&'a [(K, V)], u16, u16)>,
 //     min: Bound<&'a Q>,
 //     max: Bound<&'a Q>
 // }
 
-// impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
+// impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q: ?Sized> where K: AsRef<str>, Q: AsRef<str> {
 
-//     fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q> {
+//     fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q: ?Sized> {
 //         let mut range = Range {
 //             stack: VecDeque::new(),
 //             curr_item: None,
@@ -986,7 +1012,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
 //     }
 // }
 
-// impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
+// impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q: ?Sized> where K: AsRef<str>, Q: AsRef<str> {
 //     type Item = (&'a K, &'a V);
 
 //     #[inline(always)]
@@ -1266,7 +1292,7 @@ mod tests {
     }
 }
 
-/*
+
 #[cfg(test)]
 mod bench {
     use test;
@@ -1296,7 +1322,7 @@ mod bench {
     map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
 
     map_iter_bench!(burst_iter_10000, 20, 100, 10000, BurstTrieMap);
-    map_range_bench!(burst_range_10000, 20, 100, 10000, BurstTrieMap);
+    // map_range_bench!(burst_range_10000, 20, 100, 10000, BurstTrieMap);
 
 
 
@@ -1325,5 +1351,5 @@ mod bench {
 
 
     map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
-    map_range_bench!(btree_range_10000, 20, 100, 10000, BTreeMap);
-}*/
+    // map_range_bench!(btree_range_10000, 20, 100, 10000, BTreeMap);
+}

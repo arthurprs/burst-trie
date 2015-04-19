@@ -13,7 +13,7 @@ macro_rules! map_get_rnd_bench {
 
             let keys = (0..$map_len).map(|_| {
                 let key_len = rng.gen_range($min_len, $max_len);
-                $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice()
+                $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref()
             }).collect::<Vec<_>>();
 
             for key in &keys {
@@ -45,7 +45,7 @@ macro_rules! map_insert_rnd_bench {
 
             let keys = (0..$map_len).map(|_| {
                 let key_len = rng.gen_range($min_len, $max_len);
-                $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice()
+                $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref()
             }).collect::<Vec<_>>();
             
             b.iter(|| {
@@ -75,7 +75,7 @@ macro_rules! map_get_seq_bench {
 
             let keys = (0..$map_len).map(|i| {
                 let key_len = rng.gen_range(0, $max_len - $min_len);
-                $key_prefix.to_string() + (start_num + i).to_string().as_slice() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice()
+                $key_prefix.to_string() + (start_num + i).to_string().as_ref() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref()
             }).collect::<Vec<_>>();
 
             for key in &keys {
@@ -110,7 +110,7 @@ macro_rules! map_insert_seq_bench {
 
             let keys = (0..$map_len).map(|i| {
                 let key_len = rng.gen_range(0, $max_len - $min_len);
-                $key_prefix.to_string() + (start_num + i).to_string().as_slice() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice()
+                $key_prefix.to_string() + (start_num + i).to_string().as_ref() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref()
             }).collect::<Vec<_>>();
             
             let mut i = 0;
@@ -139,7 +139,7 @@ macro_rules! map_iter_bench {
 
             (0..$map_len).map(|_| {
                 let key_len = rng.gen_range($min_len, $max_len);
-                let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice();
+                let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref();
                 map.insert(key, value);
             }).count();
             
@@ -169,7 +169,7 @@ macro_rules! map_range_bench {
 
             (0..$map_len).map(|_| {
                 let key_len = rng.gen_range($min_len, $max_len);
-                let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_slice();
+                let key = $key_prefix.to_string() + rng.gen_ascii_chars().take(key_len).collect::<String>().as_ref();
                 map.insert(key.clone(), value);
                 key
             }).count();
