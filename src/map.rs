@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::cell::UnsafeCell;
 
 const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
-const BUCKET_SIZE: usize = 64;
+const BUCKET_SIZE: usize = 32;
 
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
@@ -39,7 +39,7 @@ enum BurstTrieNode<K, V> where K: AsRef<str> {
     Empty,
     Hybrid(Rc<UnsafeCell<BucketNode<K, V>>>),
     Bucket(BucketNode<K, V>),
-    Access(AccessNode<K, V>)
+    Access(Box<AccessNode<K, V>>)
 }
 
 struct BucketNode<K, V> where K: AsRef<str> {
@@ -47,7 +47,7 @@ struct BucketNode<K, V> where K: AsRef<str> {
 }
 
 struct AccessNode<K, V> where K: AsRef<str> {
-    nodes: Box<[BurstTrieNode<K, V>; ALPHABET_SIZE]>,
+    nodes: [BurstTrieNode<K, V>; ALPHABET_SIZE],
     terminator: Option<(K, V)>
 }
 
@@ -78,7 +78,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.len(), 1);
     /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if let BurstTrieNode::Access(ref mut access) = self.root {
+        if let BurstTrieNode::Access(box ref mut access) = self.root {
             let opt_old_value = access.insert(key, value, 0);
             if opt_old_value.is_none() {
                 self.len += 1;
@@ -105,7 +105,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.get("b"), None);
     /// ```
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: AsRef<str> {
-        if let BurstTrieNode::Access(ref access) = self.root {
+        if let BurstTrieNode::Access(box ref access) = self.root {
             access.get(key, 0)
         } else {
             unreachable!();
@@ -131,7 +131,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.get("a"), Some(&1));
     /// ```
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: AsRef<str> {
-        if let BurstTrieNode::Access(ref mut access) = self.root {
+        if let BurstTrieNode::Access(box ref mut access) = self.root {
             access.get_mut(key, 0)
         } else {
             unreachable!();
@@ -170,7 +170,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.len(), 0);
     /// ```
     pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V> where Q: AsRef<str> {
-        if let BurstTrieNode::Access(ref mut access) = self.root {
+        if let BurstTrieNode::Access(box ref mut access) = self.root {
             let opt_old_value = access.remove(key, 0);
             if opt_old_value.is_some() {
                 self.len -= 1;
@@ -260,6 +260,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
 
 impl<K, V> PartialEq for BurstTrieNode<K, V> where K: AsRef<str> {
     fn eq(&self, other: &Self) -> bool {
+        #[allow(improper_ctypes)]
         extern { fn memcmp(s1: *const i8, s2: *const i8, n: usize) -> i32; }
         unsafe { memcmp(mem::transmute(self), mem::transmute(other), mem::size_of::<Self>()) == 0 }
     }
@@ -379,11 +380,11 @@ impl<K, V> BucketNode<K, V> where K: AsRef<str> {
 }
 
 impl<K, V> AccessNode<K, V> where K: AsRef<str> {
-    fn new() -> AccessNode<K, V> {
-        let mut access = AccessNode {
-            nodes: Box::new(unsafe { mem::zeroed() }),
+    fn new() -> Box<AccessNode<K, V>> {
+        let mut access = Box::new(AccessNode {
+            nodes: unsafe { mem::zeroed() },
             terminator: None
-        };
+        });
         let node = Rc::new(UnsafeCell::new(BucketNode::new()));
         for i in (0..ALPHABET_SIZE) {
             access.nodes[i] = BurstTrieNode::Hybrid(node.clone());
@@ -391,11 +392,11 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
         access
     }
 
-    fn from_pure_bucket(mut bucket: BucketNode<K,V>, depth: usize) -> AccessNode<K, V> {
-        let mut access = AccessNode {
-            nodes: Box::new(unsafe { mem::zeroed() }),
+    fn from_pure_bucket(mut bucket: BucketNode<K,V>, depth: usize) -> Box<AccessNode<K, V>> {
+        let mut access = Box::new(AccessNode {
+            nodes: unsafe { mem::zeroed() },
             terminator: None
-        };
+        });
 
         if bucket.items[0].0.as_ref().len() == depth {
             access.terminator = Some(bucket.items.remove(0));
@@ -499,7 +500,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             match self.nodes[idx] {
-                BurstTrieNode::Access(ref mut access) =>
+                BurstTrieNode::Access(box ref mut access) =>
                     return access.insert(key, value, depth + 1),
                 BurstTrieNode::Bucket(ref mut bucket) => {
                     let result = bucket.insert(key, value, depth + 1);
@@ -532,7 +533,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             match self.nodes[idx] {
-                BurstTrieNode::Access(ref mut access) =>
+                BurstTrieNode::Access(box ref mut access) =>
                     access.remove(key, depth + 1),
                 BurstTrieNode::Bucket(ref mut bucket) =>
                     bucket.remove(key, depth + 1),
@@ -553,7 +554,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     //         let idx = key.as_ref().as_bytes()[depth] as usize;
     //         debug_assert!(idx < ALPHABET_SIZE);
     //         match self.nodes[idx] {
-    //             BurstTrieNode::Access(ref access) =>
+    //             BurstTrieNode::Access(box ref access) =>
     //                 access.get(key, depth + 1),
     //             BurstTrieNode::Bucket(ref bucket) =>
     //                 bucket.get(key, depth + 1),
@@ -578,7 +579,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
                 let idx = key.as_ref().as_bytes()[depth] as usize;
                 debug_assert!(idx < ALPHABET_SIZE);
                 match this_access.nodes[idx] {
-                    BurstTrieNode::Access(ref access) => {
+                    BurstTrieNode::Access(box ref access) => {
                         this_access = access;
                         depth += 1;
                     },
@@ -602,7 +603,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             debug_assert!(idx < ALPHABET_SIZE);
             match self.nodes[idx] {
-                BurstTrieNode::Access(ref mut access) =>
+                BurstTrieNode::Access(box ref mut access) =>
                     access.get_mut(key, depth + 1),
                 BurstTrieNode::Bucket(ref mut bucket) =>
                     bucket.get_mut(key, depth + 1),
@@ -681,7 +682,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
                         return Some((key, value));
                     }
                 },
-                BurstTrieNode::Access(ref access) => {
+                BurstTrieNode::Access(box ref access) => {
                     // add to stack in reverse order
                     for i in (1..ALPHABET_SIZE + 1) {
                         let idx = ALPHABET_SIZE - i;
@@ -759,7 +760,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
                         return next;
                     }
                 },
-                BurstTrieNode::Access(mut access) => {
+                BurstTrieNode::Access(box mut access) => {
                     // add to stack in reverse order
                     for i in (1..ALPHABET_SIZE + 1) {
                         let idx = ALPHABET_SIZE - i;
@@ -854,7 +855,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
 //                     // can only hit a bucket once
 //                     return;
 //                 },
-//                 BurstTrieNode::Access(ref access) => {
+//                 BurstTrieNode::Access(box ref access) => {
 //                     if depthsz < min_key.as_ref().len() {
 //                         let mut min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
 //                         while min_key_byte + 1 < ALPHABET_SIZE && access.nodes[min_key_byte] == access.nodes[min_key_byte + 1] {
@@ -919,7 +920,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
 //                     // can only hit a bucket once
 //                     return;
 //                 },
-//                 BurstTrieNode::Access(ref access) => {
+//                 BurstTrieNode::Access(box ref access) => {
 //                     if depthsz < max_key.as_ref().len() {
 //                         let mut max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
 //                         self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
@@ -978,7 +979,7 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
 //                         return Some((key, value));
 //                     }
 //                 },
-//                 BurstTrieNode::Access(ref access) => {
+//                 BurstTrieNode::Access(box ref access) => {
 //                     // add to stack in reverse order
 //                     for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
 //                         let idx = ALPHABET_SIZE - i;
@@ -1329,27 +1330,27 @@ mod bench {
     use std::collections::BTreeMap;
     map_get_rnd_bench!(btree_get_short_1000, 5, 15, 1000, BTreeMap);
     map_get_rnd_bench!(btree_get_short_10000, 5, 15, 10000, BTreeMap);
-    map_get_rnd_bench!(btree_get_short_100000, 5, 15, 100000, BTreeMap);
+    // map_get_rnd_bench!(btree_get_short_100000, 5, 15, 100000, BTreeMap);
     map_get_rnd_bench!(btree_get_medium_1000, 20, 100, 1000, BTreeMap);
     map_get_rnd_bench!(btree_get_medium_10000, 20, 100, 10000, BTreeMap);
-    map_get_rnd_bench!(btree_get_medium_100000, 20, 100, 100000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_short_1000, 5, 15, 1000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_short_10000, 5, 15, 10000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_short_100000, 5, 15, 100000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_medium_1000, 20, 100, 1000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_medium_10000, 20, 100, 10000, BTreeMap);
-    map_insert_rnd_bench!(btree_insert_medium_100000, 20, 100, 100000, BTreeMap);
+    // map_get_rnd_bench!(btree_get_medium_100000, 20, 100, 100000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_short_1000, 5, 15, 1000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_short_10000, 5, 15, 10000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_short_100000, 5, 15, 100000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_medium_1000, 20, 100, 1000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_medium_10000, 20, 100, 10000, BTreeMap);
+    // map_insert_rnd_bench!(btree_insert_medium_100000, 20, 100, 100000, BTreeMap);
 
-    map_get_rnd_bench!(btree_get_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    map_get_rnd_bench!(btree_get_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
-    map_insert_rnd_bench!(btree_insert_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
-
-
-    map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
-    map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
+    // map_get_rnd_bench!(btree_get_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
+    // map_get_rnd_bench!(btree_get_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
+    // map_insert_rnd_bench!(btree_insert_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
+    // map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
 
 
-    map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
+    // map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
+    // map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
+
+
+    // map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
     // map_range_bench!(btree_range_10000, 20, 100, 10000, BTreeMap);
 }

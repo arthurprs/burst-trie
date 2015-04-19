@@ -1,4 +1,6 @@
+#![feature(box_patterns)]
 #![feature(test)]
+
 #[cfg(test)]
 extern crate test;
 
