@@ -20,8 +20,9 @@ use std::ops::{Index, IndexMut};
 use std::collections::VecDeque;
 use std::iter::Map;
 
-const ALPHABET_SIZE: usize = 128; // ascii AND utf-8 compatible
-const CONTAINER_SIZE: usize = 64;
+const ALPHABET_SIZE: usize = 256;
+const CONTAINER_SIZE: usize = 32;
+const SMALL_ACCESS_SIZE: usize = 60;
 
 /// An BurstTrie implementation of an ordered map. Specialized for Str types.
 ///
@@ -33,8 +34,9 @@ pub struct BurstTrieMap<K, V> where K: AsRef<str> {
 
 enum BurstTrieNode<K, V> where K: AsRef<str> {
     Empty,
-    Container(ContainerNode<K, V>),
-    Access(Box<AccessNode<K, V>>)
+    Container(Box<ContainerNode<K, V>>),
+    Access(Box<AccessNode<K, V>>),
+    SmallAccess(Box<SmallAccessNode<K, V>>)
 }
 
 struct ContainerNode<K, V> where K: AsRef<str> {
@@ -43,6 +45,13 @@ struct ContainerNode<K, V> where K: AsRef<str> {
 
 struct AccessNode<K, V> where K: AsRef<str> {
     nodes: [BurstTrieNode<K, V>; ALPHABET_SIZE],
+    terminator: Option<(K, V)>
+}
+
+struct SmallAccessNode<K, V> where K: AsRef<str> {
+    len: u16,
+    index: [u8; ALPHABET_SIZE],
+    snodes: [BurstTrieNode<K, V>; SMALL_ACCESS_SIZE],
     terminator: Option<(K, V)>
 }
 
@@ -245,20 +254,33 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
                 *self = BurstTrieNode::Container(ContainerNode::from_key_value(key, value));
                 return None
             },
-            BurstTrieNode::Container(ref mut container) => {
-                let result = container.insert(key, value, depth);
+            BurstTrieNode::Container(box ref mut container) => {
                 if ! container.need_burst() {
-                    return result;
+                    return container.insert(key, value, depth);
                 }
             },
-            BurstTrieNode::Access(ref mut access) => {
+            BurstTrieNode::Access(box ref mut access) => {
                 return access.insert(key, value, depth)
+            },
+            BurstTrieNode::SmallAccess(box ref mut small) => {
+                if ! small.need_grow() {
+                    return small.insert(key, value, depth)
+                }
             },
         }
 
-        // if we reach here the container needs bursting
-        self.burst_container(depth);
-        None
+        match *self {
+            BurstTrieNode::Container(_) => {
+                // if we reach here the container needs bursting
+                self.burst_container(depth);
+            },
+            BurstTrieNode::SmallAccess(_) => {
+                self.grow_access();
+            },
+            _ => unreachable!()
+        }
+
+        return self.insert(key, value, depth);
     }
 
     #[inline(always)]
@@ -268,11 +290,14 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
             BurstTrieNode::Empty => {
                 None
             },
-            BurstTrieNode::Container(ref mut container) => {
+            BurstTrieNode::Container(box ref mut container) => {
                 container.remove(key, depth)
             },
-            BurstTrieNode::Access(ref mut access) => {
+            BurstTrieNode::Access(box ref mut access) => {
                 access.remove(key, depth)
+            },
+            BurstTrieNode::SmallAccess(box ref mut small) => {
+                small.remove(key, depth)
             },
         }
     }
@@ -283,11 +308,14 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
             BurstTrieNode::Empty => {
                 None
             },
-            BurstTrieNode::Container(ref container) => {
+            BurstTrieNode::Container(box ref container) => {
                 container.get(key, depth)
             },
-            BurstTrieNode::Access(ref access) => {
+            BurstTrieNode::Access(box ref access) => {
                 access.get(key, depth)
+            },
+            BurstTrieNode::SmallAccess(box ref small) => {
+                small.get(key, depth)
             },
         }
     }
@@ -298,11 +326,14 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
             BurstTrieNode::Empty => {
                 None
             },
-            BurstTrieNode::Container(ref mut container) => {
+            BurstTrieNode::Container(box ref mut container) => {
                 container.get_mut(key, depth)
             },
-            BurstTrieNode::Access(ref mut access) => {
+            BurstTrieNode::Access(box ref mut access) => {
                 access.get_mut(key, depth)
+            },
+            BurstTrieNode::SmallAccess(box ref mut small) => {
+                small.get_mut(key, depth)
             },
         }
     }
@@ -310,18 +341,47 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
     fn burst_container(&mut self, depth: usize) {
         let old_self = mem::replace(self, BurstTrieNode::Empty);
         if let BurstTrieNode::Container(old_container) = old_self {
-            *self = BurstTrieNode::Access(AccessNode::from_container(old_container, depth));
+            let mut cardinality = 0;
+            if CONTAINER_SIZE > SMALL_ACCESS_SIZE {
+                // otherwise the code inside is useless
+                let mut index = [false; ALPHABET_SIZE];
+                for &(ref key, _) in &old_container.items {
+                    if depth < key.as_ref().as_bytes().len() {
+                        let idx = key.as_ref().as_bytes()[depth] as usize;
+                        if ! index[idx] {
+                            index[idx] = true;
+                            cardinality += 1;
+                        }
+                    } else {
+                        cardinality += 1;
+                    }
+                }
+            }
+            if cardinality > SMALL_ACCESS_SIZE {
+                *self = BurstTrieNode::Access(AccessNode::from_container(old_container, depth));
+            } else {
+                *self = BurstTrieNode::SmallAccess(SmallAccessNode::from_container(old_container, depth));
+            }
         } else {
             panic!("must be a container!");
+        }
+    }
+
+    fn grow_access(&mut self) {
+        let old_self = mem::replace(self, BurstTrieNode::Empty);
+        if let BurstTrieNode::SmallAccess(small) = old_self {
+            *self = BurstTrieNode::Access(AccessNode::from_small(small));
+        } else {
+            panic!("must be a small access!");
         }
     }
 }
 
 impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
-    fn from_key_value(key: K, value: V) -> ContainerNode<K, V> {
-        let mut container = ContainerNode {
+    fn from_key_value(key: K, value: V) -> Box<ContainerNode<K, V>> {
+        let mut container = Box::new(ContainerNode {
             items: Vec::new()
-        };
+        });
         container.items.push((key, value));
 
         container
@@ -340,7 +400,7 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
                     Ordering::Less => true,
                     Ordering::Greater => false
                 },
-            _ => true
+            None => true
         };
 
         if seq_insert {
@@ -406,12 +466,12 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
 
     #[inline]
     fn need_burst(&self) -> bool {
-        self.items.len() > CONTAINER_SIZE
+        self.items.len() >= CONTAINER_SIZE
     }
 }
 
 impl<K, V> AccessNode<K, V> where K: AsRef<str> {
-    fn from_container(container: ContainerNode<K, V>, depth: usize) -> Box<AccessNode<K, V>> {
+    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<AccessNode<K, V>> {
         let mut access_node = Box::new(AccessNode {
             nodes: unsafe { mem::zeroed() },
             terminator: None
@@ -422,12 +482,26 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
         access_node
     }
 
+    fn from_small(mut small: Box<SmallAccessNode<K, V>>) -> Box<AccessNode<K, V>> {
+        let mut access_node = Box::new(AccessNode {
+            nodes: unsafe { mem::zeroed() },
+            terminator: small.terminator.take()
+        });
+        for idx in (0..ALPHABET_SIZE) {
+            let small_idx = small.index[idx] as usize;
+            if small_idx < SMALL_ACCESS_SIZE {
+                access_node.nodes[idx] = mem::replace(&mut small.snodes[small_idx], BurstTrieNode::Empty);
+            }
+        }
+        access_node
+    }
+
     #[inline]
     fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
         // depth is always <= key.len
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            debug_assert!(idx < ALPHABET_SIZE);
+            
             self.nodes[idx].insert(key, value, depth + 1)
         } else if let Some((_, ref mut old_value)) = self.terminator {
             Some(mem::replace(old_value, value))
@@ -442,7 +516,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            debug_assert!(idx < ALPHABET_SIZE);
+            
             self.nodes[idx].remove(key, depth + 1)
         } else if let Some((_, old_value)) = self.terminator.take() {
             Some(old_value)
@@ -455,7 +529,7 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            debug_assert!(idx < ALPHABET_SIZE);
+            
             self.nodes[idx].get(key, depth + 1)
         } else if let Some((_, ref v)) = self.terminator {
             Some(v)
@@ -468,13 +542,108 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            debug_assert!(idx < ALPHABET_SIZE);
+            
             self.nodes[idx].get_mut(key, depth + 1)
         } else if let Some((_, ref mut v)) = self.terminator {
             Some(v)
         } else {
             None
         }
+    }
+}
+
+impl<K, V> SmallAccessNode<K, V> where K: AsRef<str> {
+    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<SmallAccessNode<K, V>> {
+        let mut access_node = Box::new(SmallAccessNode {
+            len: 0,
+            index: [SMALL_ACCESS_SIZE as u8; ALPHABET_SIZE],
+            snodes: unsafe { mem::zeroed() },
+            terminator: None
+        });
+        for (key, value) in container.items {
+            access_node.insert(key, value, depth);
+        }
+        access_node
+    }
+
+    #[inline]
+    fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
+        // depth is always <= key.len
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
+            
+            let small_idx = if (self.index[idx] as usize) < SMALL_ACCESS_SIZE {
+                self.index[idx] as usize
+            } else {
+                self.index[idx] = self.len as u8;
+                let prev_len = self.len;
+                self.len += 1;
+                prev_len as usize
+            };
+            self.snodes[small_idx].insert(key, value, depth + 1)
+        } else if let Some((_, ref mut old_value)) = self.terminator {
+            Some(mem::replace(old_value, value))
+        } else {
+            self.terminator = Some((key, value));
+            None
+        }
+    }
+
+
+    #[inline]
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
+            let small_idx = self.index[idx] as usize;
+            if small_idx < SMALL_ACCESS_SIZE {
+                self.snodes[small_idx].remove(key, depth + 1)
+            } else {
+                None
+            }
+        } else if let Some((_, old_value)) = self.terminator.take() {
+            Some(old_value)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
+            let small_idx = self.index[idx] as usize;
+            if small_idx < SMALL_ACCESS_SIZE {
+                self.snodes[small_idx].get(key, depth + 1)
+            } else {
+                None
+            }
+        } else if let Some((_, ref v)) = self.terminator {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
+        if depth < key.as_ref().len() {
+            let idx = key.as_ref().as_bytes()[depth] as usize;
+            
+            let small_idx = self.index[idx] as usize;
+            if small_idx < SMALL_ACCESS_SIZE {
+                self.snodes[small_idx].get_mut(key, depth + 1)
+            } else {
+                None
+            }
+        } else if let Some((_, ref mut v)) = self.terminator {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn need_grow(&self) -> bool {
+        self.len as usize >= SMALL_ACCESS_SIZE
     }
 }
 
@@ -519,7 +688,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
 
         while let Some(node) = self.stack.pop() {
             match *node {
-                BurstTrieNode::Container(ref container) => {
+                BurstTrieNode::Container(box ref container) => {
                     let mut iter = container.items.iter();
                     let next = iter.next();
                     mem::replace(&mut self.container_iter, Some(iter)); 
@@ -528,16 +697,17 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
                         return Some((key, value));
                     }
                 },
-                BurstTrieNode::Access(ref access) => {
+                BurstTrieNode::Access(box ref access) => {
                     // add to stack in reverse order
                     for i in (1..ALPHABET_SIZE + 1) {
                         let idx = ALPHABET_SIZE - i;
                         match access.nodes[idx] {
                             ref node @ BurstTrieNode::Container(_) |
+                            ref node @ BurstTrieNode::SmallAccess(_) |
                             ref node @ BurstTrieNode::Access(_) => {
                                 self.stack.push(node);
                             },
-                            _ => ()
+                            BurstTrieNode::Empty => ()
                         }
                     }
 
@@ -546,7 +716,29 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
                         return Some((key, value));
                     }
                 },
-                _ => ()
+                BurstTrieNode::SmallAccess(box ref small) => {
+                    // add to stack in reverse order
+                    for i in (1..ALPHABET_SIZE + 1) {
+                        let idx = ALPHABET_SIZE - i;
+                        let small_idx = small.index[idx] as usize;
+                        if small_idx < SMALL_ACCESS_SIZE {
+                            match small.snodes[small_idx] {
+                                ref node @ BurstTrieNode::Container(_) |
+                                ref node @ BurstTrieNode::SmallAccess(_) |
+                                ref node @ BurstTrieNode::Access(_) => {
+                                    self.stack.push(node);
+                                },
+                                BurstTrieNode::Empty => ()
+                            }
+                        }
+                    }
+
+                    if let Some((ref key, ref value)) = small.terminator {
+                        self.remaining_len -= 1;
+                        return Some((key, value));
+                    }
+                },
+                BurstTrieNode::Empty => ()
             }
         }
         None
@@ -596,10 +788,11 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
                         let node = mem::replace(&mut access.nodes[idx], BurstTrieNode::Empty);
                         match node {
                             BurstTrieNode::Container(_) |
+                            BurstTrieNode::SmallAccess(_) |
                             BurstTrieNode::Access(_) => {
                                 self.stack.push(node);
                             },
-                            _ => ()
+                            BurstTrieNode::Empty => ()
                         }
                     }
 
@@ -609,7 +802,30 @@ impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
                         return access.terminator;
                     }
                 },
-                _ => ()
+                BurstTrieNode::SmallAccess(box mut small) => {
+                    // add to stack in reverse order
+                    for i in (1..ALPHABET_SIZE + 1) {
+                        let idx = ALPHABET_SIZE - i;
+                        let small_idx = small.index[idx] as usize;
+                        if small_idx < SMALL_ACCESS_SIZE {
+                            let node = mem::replace(&mut small.snodes[small_idx], BurstTrieNode::Empty);
+                            match node {
+                                BurstTrieNode::Container(_) |
+                                BurstTrieNode::SmallAccess(_) |
+                                BurstTrieNode::Access(_) => {
+                                    self.stack.push(node);
+                                },
+                                BurstTrieNode::Empty => ()
+                            }
+                        }
+                    }
+
+                    if small.terminator.is_some() {
+                        self.remaining_len -= 1;
+                        return small.terminator;
+                    }
+                },
+                BurstTrieNode::Empty => ()
             }
         }
         None
@@ -639,11 +855,12 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
         };
 
         match *root {
-            BurstTrieNode::Container(ref container) =>
+            BurstTrieNode::Container(box ref container) =>
                 range.stack.push_back((root, 0, true, 0, container.items.len() as u16)),
-            BurstTrieNode::Access(_) =>
+            BurstTrieNode::Access(_) |
+            BurstTrieNode::SmallAccess(_)  =>
                 range.stack.push_back((root, 0, true, 0, ALPHABET_SIZE as u16)),
-            _ => return range
+            BurstTrieNode::Empty => return range
         }
 
         range.find_min();
@@ -662,7 +879,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
         while let Some((node, depth, _, _, _)) = self.stack.pop_back() {
             let depthsz = depth as usize;
             match *node {
-                BurstTrieNode::Container(ref container) => {
+                BurstTrieNode::Container(box ref container) => {
                     let res_bs = container.items.binary_search_by(|other| {
                         other.0.as_ref()[depthsz..].cmp(&min_key.as_ref()[depthsz..])
                     });
@@ -674,16 +891,17 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
                     // can only hit a container once
                     return;
                 },
-                BurstTrieNode::Access(ref access) => {
+                BurstTrieNode::Access(box ref access) => {
                     if depthsz < min_key.as_ref().len() {
                         let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
                         self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
                         match access.nodes[min_key_byte] {
-                            BurstTrieNode::Container(ref container) =>
+                            BurstTrieNode::Container(box ref container) =>
                                 self.stack.push_back((&access.nodes[min_key_byte], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) =>
+                            BurstTrieNode::Access(_) |
+                            BurstTrieNode::SmallAccess(_) =>
                                 self.stack.push_back((&access.nodes[min_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            _ => return // exit
+                            BurstTrieNode::Empty => return // exit
                         }
                     } else {
                         // re-add node to the stack with correct terminator and exit
@@ -691,7 +909,28 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
                         return;
                     }
                 },
-                _ => ()
+                BurstTrieNode::SmallAccess(box ref small) => {
+                    if depthsz < min_key.as_ref().len() {
+                        let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
+                        self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
+                        let small_idx = small.index[min_key_byte] as usize;
+                        if small_idx < SMALL_ACCESS_SIZE {
+                            match small.snodes[small_idx] {
+                                BurstTrieNode::Container(box ref container) =>
+                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+                                BurstTrieNode::Access(_) |
+                                BurstTrieNode::SmallAccess(_) =>
+                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+                                BurstTrieNode::Empty => return // exit
+                            }
+                        }
+                    } else {
+                        // re-add node to the stack with correct terminator and exit
+                        self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
+                        return;
+                    }
+                },
+                BurstTrieNode::Empty => ()
             }
         }
     }
@@ -706,7 +945,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
         while let Some((node, depth, terminator, start_pos, _)) = self.stack.pop_front() {
             let depthsz = depth as usize;
             match *node {
-                BurstTrieNode::Container(ref container) => {
+                BurstTrieNode::Container(box ref container) => {
                     let res_bs = container.items.binary_search_by(|other| {
                         other.0.as_ref()[depthsz..].cmp(&max_key.as_ref()[depthsz..])
                     });
@@ -718,16 +957,17 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
                     // can only hit a container once
                     return;
                 },
-                BurstTrieNode::Access(ref access) => {
+                BurstTrieNode::Access(box ref access) => {
                     if depthsz < max_key.as_ref().len() {
                         let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
                         self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
                         match access.nodes[max_key_byte] {
-                            BurstTrieNode::Container(ref container) =>
+                            BurstTrieNode::Container(box ref container) =>
                                 self.stack.push_front((&access.nodes[max_key_byte], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) =>
+                            BurstTrieNode::Access(_) |
+                            BurstTrieNode::SmallAccess(_) =>
                                 self.stack.push_front((&access.nodes[max_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            _ => return // exit
+                            BurstTrieNode::Empty => return // exit
                         }
                     } else {
                         // re-add node to the stack with correct terminator and exit
@@ -735,13 +975,34 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
                         return;
                     }
                 },
-                _ => ()
+                BurstTrieNode::SmallAccess(box ref small) => {
+                    if depthsz < max_key.as_ref().len() {
+                        let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
+                        self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
+                        let small_idx = small.index[max_key_byte] as usize;
+                        if small_idx < SMALL_ACCESS_SIZE {
+                            match small.snodes[small_idx] {
+                                BurstTrieNode::Container(box ref container) =>
+                                    self.stack.push_front((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+                                BurstTrieNode::Access(_) |
+                                BurstTrieNode::SmallAccess(_) =>
+                                    self.stack.push_front((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+                                BurstTrieNode::Empty => return // exit
+                            }
+                        }
+                    } else {
+                        // re-add node to the stack with correct terminator and exit
+                        self.stack.push_front((node, depth, max_included, 0, 0));
+                        return;
+                    }
+                },
+                BurstTrieNode::Empty => ()
             }
         }
     }
 
     fn find_next(&mut self) -> Option<(&'a K, &'a V)> {
-        if let Some((&BurstTrieNode::Container(ref container), _, _, ref mut start_pos, end_pos)) = self.curr_item {
+        if let Some((&BurstTrieNode::Container(box ref container), _, _, ref mut start_pos, end_pos)) = self.curr_item {
             if *start_pos < end_pos {
                 let (ref key, ref value) = container.items[*start_pos as usize];
                 *start_pos += 1; // advance iterator
@@ -751,23 +1012,24 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
 
         while let Some((node, depth, terminator, start_pos, end_pos)) = self.stack.pop_back() {
             match *node {
-                BurstTrieNode::Container(ref container) => {
+                BurstTrieNode::Container(box ref container) => {
                     if start_pos < end_pos {
                         self.curr_item = Some((node, depth, terminator, start_pos + 1, end_pos));
                         let (ref key, ref value) = container.items[start_pos as usize];
                         return Some((key, value));
                     }
                 },
-                BurstTrieNode::Access(ref access) => {
+                BurstTrieNode::Access(box ref access) => {
                     // add to stack in reverse order
                     for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
                         let idx = ALPHABET_SIZE - i;
                         match access.nodes[idx] {
-                            BurstTrieNode::Container(ref container) =>
+                            BurstTrieNode::Container(box ref container) =>
                                 self.stack.push_back((&access.nodes[idx], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) =>
+                            BurstTrieNode::Access(_) |
+                            BurstTrieNode::SmallAccess(_) =>
                                 self.stack.push_back((&access.nodes[idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            _ => ()
+                            BurstTrieNode::Empty => ()
                         }
                     }
 
@@ -777,7 +1039,30 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
                         }
                     }
                 },
-                _ => ()
+                BurstTrieNode::SmallAccess(box ref small) => {
+                    // add to stack in reverse order
+                    for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
+                        let idx = ALPHABET_SIZE - i;
+                        let small_idx = small.index[idx] as usize;
+                        if small_idx < SMALL_ACCESS_SIZE {
+                            match small.snodes[small_idx] {
+                                BurstTrieNode::Container(box ref container) =>
+                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+                                BurstTrieNode::Access(_) |
+                                BurstTrieNode::SmallAccess(_) =>
+                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+                                BurstTrieNode::Empty => ()
+                            }
+                        }
+                    }
+
+                    if terminator {
+                        if let Some((ref key, ref value)) = small.terminator {
+                            return Some((key, value));
+                        }
+                    }
+                },
+                BurstTrieNode::Empty => ()
             }
         }
 
