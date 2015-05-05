@@ -2,14 +2,14 @@
 
 [![Build Status](https://travis-ci.org/arthurprs/burst-trie.svg)](https://travis-ci.org/arthurprs/burst-trie)
 
-Implements an ordered map as a Burst Trie. It's a very fast Trie variant specialized for Str types.
+Implements an ordered map as an Adaptive Burst Trie. It's a very fast Trie variant specialized for byte ordered types.
 
 ***This is a work in progress***
 
 This structure achieves better performance than a BTree implementations for common operations while
 still allowing range scanning and ordered iteration.
 
-Performance is usually 50%+ better than the std lib BTreeMap for random keys (worst case) but it quickly pulls ahead if keys have common prefixes (See [benchmarks](#benchmarks)).
+Performance is usually 50%+ better than the std lib BTreeMap for random keys (worst case) but it pulls ahead further if keys have common prefixes (See [benchmarks](#benchmarks)).
 Memory wise it consumes 90~140% memory of the equivalent BTreeMap.
 
 *The Burst Trie was original described by S. Heinz. You can find the original paper in the internet by it's title
@@ -17,7 +17,7 @@ Memory wise it consumes 90~140% memory of the equivalent BTreeMap.
 
 ### Limitations
 
-It's specialized for string keys, specifically ASCII or UTF-8.
+It's specialized for bute ordered keys.
 
 # TODO
 

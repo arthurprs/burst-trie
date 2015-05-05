@@ -1,10 +1,10 @@
-/// Implements an ordered map as a BurstTrie. It's a very fast Trie variant specialized for Str types.
+/// Implements an ordered map as an Adaptive BurstTrie.
 ///
 /// This structure achieves better performance than a BTree implementations for common operations while
 /// still allowing range scanning and ordered iteration. Performance wise it's usually 50+% faster than
-/// the std lib BTreeMap for random keys and pulls ahead rapdily if keys have common prefixes.
+/// the std lib BTreeMap for random keys and pulls ahead further if keys have common prefixes.
 ///
-/// It's specialized for string keys, specifically ASCII or UTF-8.
+/// It's specialized for byte ordered keys, like ASCII or UTF-8 strings.
 ///
 /// The Burst Trie was originaly described by S. Heinz.
 /// You can find the original paper in the internet by it's title
@@ -24,7 +24,7 @@ const ALPHABET_SIZE: usize = 256;
 const CONTAINER_SIZE: usize = 32;
 const SMALL_ACCESS_SIZE: usize = 60;
 
-/// An BurstTrie implementation of an ordered map. Specialized for Str types.
+/// An BurstTrie implementation of an ordered map. Specialized for byte ordered types.
 ///
 /// See module level docs for details.
 pub struct BurstTrieMap<K, V> where K: AsRef<str> {
