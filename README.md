@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/arthurprs/burst-trie.svg)](https://travis-ci.org/arthurprs/burst-trie)
 
-Implements an ordered map as an Adaptive Burst Trie. It's a very fast Trie variant specialized for byte ordered types.
+Implements an ordered map as an Adaptive Burst Trie. It's a very fast Trie variant specialized for byte ordered types (like a string).
 
 ***This is a work in progress***
 
@@ -17,10 +17,12 @@ Memory wise it consumes 90~140% memory of the equivalent BTreeMap.
 
 ### Limitations
 
-It's specialized for bute ordered keys.
+It's specialized for byte ordered keys, like String, &str and &[u8].
 
 # TODO
 
+* Entry API
+* Compile on Rust Stable
 * Improve Iterators (reverse versions)
 * Improve Range search (reverse and mut versions)
 * Set implementation

@@ -22,7 +22,7 @@ use std::iter::Map;
 
 const ALPHABET_SIZE: usize = 256;
 const CONTAINER_SIZE: usize = 32;
-const SMALL_ACCESS_SIZE: usize = 60;
+const SMALL_ACCESS_SIZE: usize = 64;
 
 /// An BurstTrie implementation of an ordered map. Specialized for byte ordered types.
 ///
@@ -49,7 +49,7 @@ struct AccessNode<K, V> where K: AsRef<str> {
 }
 
 struct SmallAccessNode<K, V> where K: AsRef<str> {
-    len: u16,
+    len: u8,
     index: [u8; ALPHABET_SIZE],
     snodes: [BurstTrieNode<K, V>; SMALL_ACCESS_SIZE],
     terminator: Option<(K, V)>
@@ -377,6 +377,27 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
     }
 }
 
+fn opt_binary_search_by<K, F>(slice: &[K], mut f: F) -> Result<usize, usize>
+    where F: FnMut(&K) -> Ordering
+{
+    let mut base : usize = 0;
+    let mut lim : usize = slice.len();
+
+    while lim != 0 {
+        let ix = base + (lim >> 1);
+        match f(unsafe { &slice.get_unchecked(ix) }) {
+            Ordering::Equal => return Ok(ix),
+            Ordering::Less => {
+                base = ix + 1;
+                lim -= 1;
+            }
+            Ordering::Greater => ()
+        }
+        lim >>= 1;
+    }
+    Err(base)
+}
+
 impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
     fn from_key_value(key: K, value: V) -> Box<ContainerNode<K, V>> {
         let mut container = Box::new(ContainerNode {
@@ -407,7 +428,7 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
             self.items.push((key, value));
         } else {
             // binary search doesn't have to check the last element due to the previous
-            let res_bs = self.items.init().binary_search_by(|other| {
+            let res_bs = opt_binary_search_by(self.items.init(), |other| {
                 other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
             });
             match res_bs {
@@ -427,7 +448,7 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
 
     #[inline]
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
-        let res_bs = self.items.binary_search_by(|other| {
+        let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         match res_bs {
@@ -440,7 +461,7 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         // FIXME: binary search is doing bounds checking internally ;/
         // FIXME: Needs a macro to generate (i)mutable versions
-        let res_bs = self.items.binary_search_by(|other| {
+        let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         if let Ok(pos) = res_bs {
@@ -452,9 +473,8 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
 
     #[inline]
     fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
-        // FIXME: binary search is doing bounds checking internally ;/
         // FIXME: Needs a macro to generate (i)mutable versions
-        let res_bs = self.items.binary_search_by(|other| {
+        let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
         if let Ok(pos) = res_bs {
@@ -516,7 +536,6 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            
             self.nodes[idx].remove(key, depth + 1)
         } else if let Some((_, old_value)) = self.terminator.take() {
             Some(old_value)
@@ -529,7 +548,6 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            
             self.nodes[idx].get(key, depth + 1)
         } else if let Some((_, ref v)) = self.terminator {
             Some(v)
@@ -542,7 +560,6 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            
             self.nodes[idx].get_mut(key, depth + 1)
         } else if let Some((_, ref mut v)) = self.terminator {
             Some(v)
@@ -880,7 +897,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
             let depthsz = depth as usize;
             match *node {
                 BurstTrieNode::Container(box ref container) => {
-                    let res_bs = container.items.binary_search_by(|other| {
+                    let res_bs = opt_binary_search_by(&container.items, |other| {
                         other.0.as_ref()[depthsz..].cmp(&min_key.as_ref()[depthsz..])
                     });
                     let start_pos = match res_bs {
@@ -946,7 +963,7 @@ impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> 
             let depthsz = depth as usize;
             match *node {
                 BurstTrieNode::Container(box ref container) => {
-                    let res_bs = container.items.binary_search_by(|other| {
+                    let res_bs = opt_binary_search_by(&container.items, |other| {
                         other.0.as_ref()[depthsz..].cmp(&max_key.as_ref()[depthsz..])
                     });
                     let end_pos = match res_bs {
