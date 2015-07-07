@@ -1,6 +1,9 @@
 #![feature(test)]
-#![feature(collections)]
 #![feature(box_patterns)]
+#![feature(collections_bound)]
+#![feature(btree_range)]
+#![feature(slice_extras)]
+#![feature(unsafe_no_drop_flag)]
 
 #[cfg(test)]
 extern crate test;

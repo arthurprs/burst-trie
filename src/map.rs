@@ -32,6 +32,7 @@ pub struct BurstTrieMap<K, V> where K: AsRef<str> {
     len: usize
 }
 
+#[unsafe_no_drop_flag]
 enum BurstTrieNode<K, V> where K: AsRef<str> {
     Empty,
     Container(Box<ContainerNode<K, V>>),
@@ -39,15 +40,18 @@ enum BurstTrieNode<K, V> where K: AsRef<str> {
     SmallAccess(Box<SmallAccessNode<K, V>>)
 }
 
+#[unsafe_no_drop_flag]
 struct ContainerNode<K, V> where K: AsRef<str> {
     items: Vec<(K, V)>
 }
 
+#[unsafe_no_drop_flag]
 struct AccessNode<K, V> where K: AsRef<str> {
     nodes: [BurstTrieNode<K, V>; ALPHABET_SIZE],
     terminator: Option<(K, V)>
 }
 
+#[unsafe_no_drop_flag]
 struct SmallAccessNode<K, V> where K: AsRef<str> {
     len: u8,
     index: [u8; ALPHABET_SIZE],
@@ -459,7 +463,6 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
 
     #[inline]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
-        // FIXME: binary search is doing bounds checking internally ;/
         // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
