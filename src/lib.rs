@@ -4,6 +4,7 @@
 #![feature(btree_range)]
 #![feature(slice_extras)]
 #![feature(unsafe_no_drop_flag)]
+#![feature(asm)]
 
 #[cfg(test)]
 extern crate test;

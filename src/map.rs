@@ -10,6 +10,7 @@
 /// You can find the original paper in the internet by it's title
 /// "Burst Tries: A Fast, Efficient Data Structure for String Keys"
 
+use std::ptr;
 use std::mem;
 use std::slice;
 use std::vec;
@@ -19,6 +20,8 @@ use std::default::Default;
 use std::ops::{Index, IndexMut};
 use std::collections::VecDeque;
 use std::iter::Map;
+use std::marker;
+use std::fmt;
 
 const ALPHABET_SIZE: usize = 256;
 const CONTAINER_SIZE: usize = 32;
@@ -28,34 +31,44 @@ const SMALL_ACCESS_SIZE: usize = 64;
 ///
 /// See module level docs for details.
 pub struct BurstTrieMap<K, V> where K: AsRef<str> {
-    root: BurstTrieNode<K, V>,
+    root: *mut BurstTrieNode<K, V>,
     len: usize
 }
 
-#[unsafe_no_drop_flag]
-enum BurstTrieNode<K, V> where K: AsRef<str> {
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+enum BurstTrieNodeType {
     Empty,
-    Container(Box<ContainerNode<K, V>>),
-    Access(Box<AccessNode<K, V>>),
-    SmallAccess(Box<SmallAccessNode<K, V>>)
+    Container,
+    Access,
+    SmallAccess,
 }
 
-#[unsafe_no_drop_flag]
+#[repr(C)]
+struct BurstTrieNode<K, V> where K: AsRef<str> {
+    _type: BurstTrieNodeType,
+    marker: marker::PhantomData<(K, V)>,
+}
+
+#[repr(C)]
 struct ContainerNode<K, V> where K: AsRef<str> {
+    _type: BurstTrieNodeType,
     items: Vec<(K, V)>
 }
 
-#[unsafe_no_drop_flag]
+#[repr(C)]
 struct AccessNode<K, V> where K: AsRef<str> {
-    nodes: [BurstTrieNode<K, V>; ALPHABET_SIZE],
+    _type: BurstTrieNodeType,
+    nodes: [*mut BurstTrieNode<K, V>; ALPHABET_SIZE],
     terminator: Option<(K, V)>
 }
 
-#[unsafe_no_drop_flag]
+#[repr(C)]
 struct SmallAccessNode<K, V> where K: AsRef<str> {
+    _type: BurstTrieNodeType,
     len: u8,
     index: [u8; ALPHABET_SIZE],
-    snodes: [BurstTrieNode<K, V>; SMALL_ACCESS_SIZE],
+    snodes: [*mut BurstTrieNode<K, V>; SMALL_ACCESS_SIZE],
     terminator: Option<(K, V)>
 }
 
@@ -64,7 +77,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// Returns a new empty BurstTrieMap
     pub fn new() -> BurstTrieMap<K, V> {
         BurstTrieMap {
-            root: BurstTrieNode::Empty,
+            root: ptr::null_mut(),
             len: 0,
         }
     }
@@ -85,7 +98,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.len(), 1);
     /// ```
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let opt_old_value = self.root.insert(key, value, 0);
+        let opt_old_value = BurstTrieNode::insert(self.root, key, value, 0, &mut self.root);
         if opt_old_value.is_none() {
             self.len += 1;
         }
@@ -108,7 +121,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.get("b"), None);
     /// ```
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where Q: AsRef<str> {
-        self.root.get(key, 0)
+        BurstTrieNode::get(self.root, key, 0)
     }
 
     /// Returns a mutable reference to the value corresponding to the key.
@@ -130,7 +143,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.get("a"), Some(&1));
     /// ```
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V> where Q: AsRef<str> {
-        self.root.get_mut(key, 0)
+        unsafe { mem::transmute(self.get(key)) }
     }
 
     /// Returns true if the map contains a value for the specified key.
@@ -165,7 +178,7 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.len(), 0);
     /// ```
     pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V> where Q: AsRef<str> {
-        let opt_old_value = self.root.remove(key, 0);
+        let opt_old_value = BurstTrieNode::remove(self.root, key, 0, &mut self.root);
         if opt_old_value.is_some() {
             self.len -= 1;
         }
@@ -208,175 +221,192 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<str> {
     /// assert_eq!(a.len(), 0);
     /// ```
     pub fn clear(&mut self) {
-        self.root = BurstTrieNode::Empty;
+        BurstTrieNode::drop(self.root);
+        self.root = ptr::null_mut();
         self.len = 0;
     }
 
-    pub fn iter(&self) -> Iter<K, V> {
-        Iter {
-            stack: vec![&self.root],
-            container_iter: None,
-            remaining_len: self.len
-        }
-    }
+    // pub fn iter(&self) -> Iter<K, V> {
+    //     Iter {
+    //         stack: vec![&self.root],
+    //         container_iter: None,
+    //         remaining_len: self.len
+    //     }
+    // }
     
-    pub fn into_iter(self) -> IntoIter<K, V> {
-        IntoIter {
-            stack: vec![self.root],
-            container_iter: None,
-            remaining_len: self.len
-        }
-    }
+    // pub fn into_iter(self) -> IntoIter<K, V> {
+    //     IntoIter {
+    //         stack: vec![self.root],
+    //         container_iter: None,
+    //         remaining_len: self.len
+    //     }
+    // }
 
-    pub fn keys<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a K> {
-        #[inline(always)]
-        fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a K {
-            &kv.0
-        }
-        self.iter().map(map_fn)
-    }
+    // pub fn keys<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a K> {
+    //     #[inline(always)]
+    //     fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a K {
+    //         &kv.0
+    //     }
+    //     self.iter().map(map_fn)
+    // }
 
-    pub fn values<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a V> {
-        #[inline(always)]
-        fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a V {
-            &kv.1
-        }
-        self.iter().map(map_fn)
-    }
+    // pub fn values<'a>(&'a self) -> Map<Iter<K, V>, fn((&'a K, &'a V)) -> &'a V> {
+    //     #[inline(always)]
+    //     fn map_fn<'a, K, V>(kv: (&'a K, &'a V)) -> &'a V {
+    //         &kv.1
+    //     }
+    //     self.iter().map(map_fn)
+    // }
 
-    pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q> where Q: AsRef<str> {
-        Range::new(&self.root, min, max)
+    // pub fn range<'a, Q: ?Sized>(&'a self, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<K, V, Q> where Q: AsRef<str> {
+    //     Range::new(&self.root, min, max)
+    // }
+}
+
+impl<K, V> Drop for BurstTrieMap<K, V> where K: AsRef<str> {
+    fn drop(&mut self) {
+        BurstTrieNode::drop(self.root);
     }
 }
 
+type BurstTrieNodeRef<K, V> = *mut *mut BurstTrieNode<K, V>;
+
 impl<K, V> BurstTrieNode<K, V> where K: AsRef<str>  {
+    #[inline]
+    fn _type(n: *const Self) -> BurstTrieNodeType {
+        if n.is_null() {
+            BurstTrieNodeType::Empty
+        } else {
+            unsafe { (*n)._type }
+        }
+    }
 
     #[inline]
-    fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
-        match *self {
-            BurstTrieNode::Empty => {
-                *self = BurstTrieNode::Container(ContainerNode::from_key_value(key, value));
-                return None
-            },
-            BurstTrieNode::Container(box ref mut container) => {
-                if ! container.need_burst() {
-                    return container.insert(key, value, depth);
-                }
-            },
-            BurstTrieNode::Access(box ref mut access) => {
-                return access.insert(key, value, depth)
-            },
-            BurstTrieNode::SmallAccess(box ref mut small) => {
-                if ! small.need_grow() {
-                    return small.insert(key, value, depth)
-                }
-            },
-        }
-
-        match *self {
-            BurstTrieNode::Container(_) => {
-                // if we reach here the container needs bursting
-                self.burst_container(depth);
-            },
-            BurstTrieNode::SmallAccess(_) => {
-                self.grow_access();
-            },
-            _ => unreachable!()
-        }
-
-        return self.insert(key, value, depth);
+    fn as_container<'a>(n: *const Self) -> &'a mut ContainerNode<K, V> {
+        unsafe { mem::transmute(n) }
     }
 
-    #[inline(always)]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+    #[inline]
+    fn as_small_access<'a>(n: *const Self) -> &'a mut SmallAccessNode<K, V> {
+        unsafe { mem::transmute(n) }
+    }
+
+    #[inline]
+    fn as_access<'a>(n: *const Self) -> &'a mut AccessNode<K, V> {
+        unsafe { mem::transmute(n) }
+    }
+
+    #[inline]
+    fn insert(n: *mut Self, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> {
+        match BurstTrieNode::_type(n) {
+            BurstTrieNodeType::Empty => {
+                unsafe {
+                    *node_ref = Box::into_raw(ContainerNode::from_key_value(key, value)) as *mut _;
+                }
+                None
+            },
+            BurstTrieNodeType::Container => {
+                BurstTrieNode::as_container(n).insert(key, value, depth, node_ref)
+            },
+            BurstTrieNodeType::Access => {
+                BurstTrieNode::as_access(n).insert(key, value, depth, node_ref)
+            },
+            BurstTrieNodeType::SmallAccess => {
+                BurstTrieNode::as_small_access(n).insert(key, value, depth, node_ref)
+            },
+        }
+    }
+
+    #[inline]
+    fn remove<Q: ?Sized>(n: *mut Self, key: &Q, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V>
+    where Q: AsRef<str> {
         // FIXME: we probably want to do some node colapsing here or in a shrink_to_fit method
-        match *self {
-            BurstTrieNode::Empty => {
+        match BurstTrieNode::_type(n) {
+            BurstTrieNodeType::Empty => {
                 None
             },
-            BurstTrieNode::Container(box ref mut container) => {
-                container.remove(key, depth)
+            BurstTrieNodeType::Container => {
+                BurstTrieNode::as_container(n).remove(key, depth, node_ref)
             },
-            BurstTrieNode::Access(box ref mut access) => {
-                access.remove(key, depth)
+            BurstTrieNodeType::Access => {
+                BurstTrieNode::as_access(n).remove(key, depth, node_ref)
             },
-            BurstTrieNode::SmallAccess(box ref mut small) => {
-                small.remove(key, depth)
+            BurstTrieNodeType::SmallAccess => {
+                BurstTrieNode::as_small_access(n).remove(key, depth, node_ref)
             },
         }
     }
 
-    #[inline(always)]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
-        match *self {
-            BurstTrieNode::Empty => {
+    #[inline]
+    fn get<'a, Q:?Sized>(n: *mut Self, key: &Q, depth: usize) -> Option<&'a V>
+    where Q: AsRef<str>, K: 'a {
+        match BurstTrieNode::_type(n) {
+            BurstTrieNodeType::Empty => {
                 None
             },
-            BurstTrieNode::Container(box ref container) => {
-                container.get(key, depth)
+            BurstTrieNodeType::Container => {
+                BurstTrieNode::as_container(n).get(key, depth)
             },
-            BurstTrieNode::Access(box ref access) => {
-                access.get(key, depth)
+            BurstTrieNodeType::Access => {
+                BurstTrieNode::as_access(n).get(key, depth)
             },
-            BurstTrieNode::SmallAccess(box ref small) => {
-                small.get(key, depth)
+            BurstTrieNodeType::SmallAccess => {
+                BurstTrieNode::as_small_access(n).get(key, depth)
             },
         }
     }
 
-    #[inline(always)]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
-        match *self {
-            BurstTrieNode::Empty => {
-                None
-            },
-            BurstTrieNode::Container(box ref mut container) => {
-                container.get_mut(key, depth)
-            },
-            BurstTrieNode::Access(box ref mut access) => {
-                access.get_mut(key, depth)
-            },
-            BurstTrieNode::SmallAccess(box ref mut small) => {
-                small.get_mut(key, depth)
-            },
+    #[inline]
+    fn drop(n: *mut Self) {
+        unsafe {
+            match BurstTrieNode::_type(n) {
+                BurstTrieNodeType::Container => {
+                    drop(Box::from_raw(n as *mut ContainerNode<K, V>))
+                },
+                BurstTrieNodeType::Access => {
+                    drop(Box::from_raw(n as *mut AccessNode<K, V>))
+                },
+                BurstTrieNodeType::SmallAccess => {
+                    drop(Box::from_raw(n as *mut SmallAccessNode<K, V>))
+                },
+                BurstTrieNodeType::Empty => ()
+            }
         }
     }
 
-    fn burst_container(&mut self, depth: usize) {
-        let old_self = mem::replace(self, BurstTrieNode::Empty);
-        if let BurstTrieNode::Container(old_container) = old_self {
-            let mut cardinality = 0;
-            if CONTAINER_SIZE > SMALL_ACCESS_SIZE {
-                // otherwise the code inside is useless
-                let mut index = [false; ALPHABET_SIZE];
-                for &(ref key, _) in &old_container.items {
-                    if depth < key.as_ref().as_bytes().len() {
-                        let idx = key.as_ref().as_bytes()[depth] as usize;
-                        if ! index[idx] {
-                            index[idx] = true;
-                            cardinality += 1;
-                        }
-                    } else {
-                        cardinality += 1;
+    #[inline]
+    fn print_structure(n: *mut Self, mut depth: usize) {
+        match BurstTrieNode::_type(n) {
+            BurstTrieNodeType::Container => {
+                println!("{}Container({})",
+                    (0..depth).map(|_| ' ').collect::<String>(),
+                    Self::as_container(n).items.len());
+            },
+            BurstTrieNodeType::Access => {
+                let access = Self::as_access(n);
+                for (c, &node) in access.nodes.iter().enumerate() {
+                    println!("{}Access({})",
+                        (0..depth).map(|_| ' ').collect::<String>(),
+                        c as u8 as char);
+                    Self::print_structure(node, depth + 1);
+                }
+            },
+            BurstTrieNodeType::SmallAccess => {
+                let small_access = Self::as_small_access(n);
+                println!("{}SmallAccess",
+                    (0..depth).map(|_| ' ').collect::<String>());
+                depth += 1;
+                for (c, &i) in small_access.index.iter().enumerate() {
+                    if (i as usize) < SMALL_ACCESS_SIZE {
+                        let node = small_access.snodes[i as usize];
+                        println!("{}SmallAccess({})",
+                            (0..depth).map(|_| ' ').collect::<String>(),
+                            c as u8 as char);
+                        Self::print_structure(node, depth + 1);
                     }
                 }
-            }
-            if cardinality > SMALL_ACCESS_SIZE {
-                *self = BurstTrieNode::Access(AccessNode::from_container(old_container, depth));
-            } else {
-                *self = BurstTrieNode::SmallAccess(SmallAccessNode::from_container(old_container, depth));
-            }
-        } else {
-            panic!("must be a container!");
-        }
-    }
-
-    fn grow_access(&mut self) {
-        let old_self = mem::replace(self, BurstTrieNode::Empty);
-        if let BurstTrieNode::SmallAccess(small) = old_self {
-            *self = BurstTrieNode::Access(AccessNode::from_small(small));
-        } else {
-            panic!("must be a small access!");
+            },
+            BurstTrieNodeType::Empty => ()
         }
     }
 }
@@ -403,17 +433,42 @@ fn opt_binary_search_by<K, F>(slice: &[K], mut f: F) -> Result<usize, usize>
 }
 
 impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
-    fn from_key_value(key: K, value: V) -> Box<ContainerNode<K, V>> {
-        let mut container = Box::new(ContainerNode {
-            items: Vec::new()
-        });
-        container.items.push((key, value));
-
-        container
+    fn from_key_value(key: K, value: V) -> Box<Self> {
+        Box::new(ContainerNode {
+            _type: BurstTrieNodeType::Container,
+            items: vec![(key, value)]
+        })
     }
 
-    #[inline]
-    fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
+    fn burst(&mut self, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> *mut BurstTrieNode<K, V> {
+        let container = unsafe { Box::from_raw(self as *mut Self) };
+        let mut cardinality = 0;
+        if CONTAINER_SIZE > SMALL_ACCESS_SIZE {
+            // otherwise the code inside is useless
+            let mut index = [false; ALPHABET_SIZE];
+            for &(ref key, _) in &container.items {
+                if depth < key.as_ref().as_bytes().len() {
+                    let idx = key.as_ref().as_bytes()[depth] as usize;
+                    if ! index[idx] {
+                        index[idx] = true;
+                        cardinality += 1;
+                    }
+                } else {
+                    cardinality += 1;
+                }
+            }
+        }
+        unsafe {
+            if cardinality > SMALL_ACCESS_SIZE {
+                *node_ref = Box::into_raw(AccessNode::from_container(container, depth)) as *mut _;
+            } else {
+                *node_ref = Box::into_raw(SmallAccessNode::from_container(container, depth)) as *mut _;
+            }
+            *node_ref
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> {
         // optimize insertions at the end
         // helps in seq insert and node bursting
         let seq_insert = match self.items.last_mut() {
@@ -428,11 +483,11 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
             None => true
         };
 
-        if seq_insert {
-            self.items.push((key, value));
+        let insert_pos = if seq_insert {
+            self.items.len()
         } else {
             // binary search doesn't have to check the last element due to the previous
-            let res_bs = opt_binary_search_by(self.items.init(), |other| {
+            let res_bs = opt_binary_search_by(&self.items[..self.items.len() - 1], |other| {
                 other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
             });
             match res_bs {
@@ -440,18 +495,19 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
                     let old_value = unsafe { self.items.get_unchecked_mut(pos) };
                     return Some(mem::replace(&mut old_value.1, value));
                 },
-                Err(pos) => {
-                    self.items.insert(pos, (key, value));
-                },
-            };
-        }
+                Err(pos) => pos
+            }
+        };
 
-        None
+        if self.items.len() >= CONTAINER_SIZE {
+            BurstTrieNode::insert(self.burst(depth, node_ref), key, value, depth, node_ref)
+        } else {
+            self.items.insert(insert_pos, (key, value));
+            None
+        }
     }
 
-
-    #[inline]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> where Q: AsRef<str> {
         let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
@@ -461,9 +517,7 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
         }
     }
 
-    #[inline]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
-        // FIXME: Needs a macro to generate (i)mutable versions
         let res_bs = opt_binary_search_by(&self.items, |other| {
             other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
         });
@@ -473,59 +527,41 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<str> {
             None
         }
     }
-
-    #[inline]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
-        // FIXME: Needs a macro to generate (i)mutable versions
-        let res_bs = opt_binary_search_by(&self.items, |other| {
-            other.0.as_ref()[depth..].cmp(&key.as_ref()[depth..])
-        });
-        if let Ok(pos) = res_bs {
-            Some(unsafe { &mut self.items.get_unchecked_mut(pos).1 })
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn need_burst(&self) -> bool {
-        self.items.len() >= CONTAINER_SIZE
-    }
 }
 
 impl<K, V> AccessNode<K, V> where K: AsRef<str> {
-    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<AccessNode<K, V>> {
+    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<Self> {
         let mut access_node = Box::new(AccessNode {
+            _type: BurstTrieNodeType::Access,
             nodes: unsafe { mem::zeroed() },
             terminator: None
         });
         for (key, value) in container.items {
-            access_node.insert(key, value, depth);
+            access_node.insert(key, value, depth, ptr::null_mut());
         }
         access_node
     }
 
-    fn from_small(mut small: Box<SmallAccessNode<K, V>>) -> Box<AccessNode<K, V>> {
+    fn from_small(mut small: Box<SmallAccessNode<K, V>>) -> Box<Self> {
         let mut access_node = Box::new(AccessNode {
+            _type: BurstTrieNodeType::Access,
             nodes: unsafe { mem::zeroed() },
             terminator: small.terminator.take()
         });
         for idx in (0..ALPHABET_SIZE) {
             let small_idx = small.index[idx] as usize;
             if small_idx < SMALL_ACCESS_SIZE {
-                access_node.nodes[idx] = mem::replace(&mut small.snodes[small_idx], BurstTrieNode::Empty);
+                access_node.nodes[idx] = mem::replace(&mut small.snodes[small_idx], ptr::null_mut());
             }
         }
         access_node
     }
 
-    #[inline]
-    fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
+    fn insert(&mut self, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> {
         // depth is always <= key.len
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            
-            self.nodes[idx].insert(key, value, depth + 1)
+            BurstTrieNode::insert(self.nodes[idx], key, value, depth + 1, &mut self.nodes[idx])
         } else if let Some((_, ref mut old_value)) = self.terminator {
             Some(mem::replace(old_value, value))
         } else {
@@ -534,12 +570,10 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
         }
     }
 
-
-    #[inline]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            self.nodes[idx].remove(key, depth + 1)
+            BurstTrieNode::remove(self.nodes[idx], key, depth + 1, &mut self.nodes[idx])
         } else if let Some((_, old_value)) = self.terminator.take() {
             Some(old_value)
         } else {
@@ -547,24 +581,11 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
         }
     }
 
-    #[inline]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
-            self.nodes[idx].get(key, depth + 1)
+            BurstTrieNode::get(self.nodes[idx], key, depth + 1)
         } else if let Some((_, ref v)) = self.terminator {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
-        if depth < key.as_ref().len() {
-            let idx = key.as_ref().as_bytes()[depth] as usize;
-            self.nodes[idx].get_mut(key, depth + 1)
-        } else if let Some((_, ref mut v)) = self.terminator {
             Some(v)
         } else {
             None
@@ -572,35 +593,57 @@ impl<K, V> AccessNode<K, V> where K: AsRef<str> {
     }
 }
 
+impl<K, V> Drop for AccessNode<K, V> where K: AsRef<str> {
+    fn drop(&mut self) {
+        // println!("dropping AccessNode {:?}", self as *const _);
+        for &ptr in self.nodes.iter() {
+            BurstTrieNode::drop(ptr);
+        }
+    }
+}
+
 impl<K, V> SmallAccessNode<K, V> where K: AsRef<str> {
-    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<SmallAccessNode<K, V>> {
+    fn from_container(container: Box<ContainerNode<K, V>>, depth: usize) -> Box<Self> {
+        // println!("creating SmallAccessNode 1");
         let mut access_node = Box::new(SmallAccessNode {
+            _type: BurstTrieNodeType::SmallAccess,
             len: 0,
             index: [SMALL_ACCESS_SIZE as u8; ALPHABET_SIZE],
             snodes: unsafe { mem::zeroed() },
             terminator: None
         });
+        // println!("creating SmallAccessNode 2 {:?}", &*access_node as *const _);
         for (key, value) in container.items {
-            access_node.insert(key, value, depth);
+            access_node.insert(key, value, depth, ptr::null_mut());
         }
         access_node
     }
 
-    #[inline]
-    fn insert(&mut self, key: K, value: V, depth: usize) -> Option<V> {
+    fn grow(&mut self, node_ref: BurstTrieNodeRef<K, V>) -> *mut BurstTrieNode<K, V> {
+        // println!("growing SmallAccessNode {:?}", self as *const _);
+        unsafe {
+            let small_access = Box::from_raw(self as *mut Self);
+            *node_ref = Box::into_raw(AccessNode::from_small(small_access))  as *mut _;
+            *node_ref
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> {
         // depth is always <= key.len
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             
             let small_idx = if (self.index[idx] as usize) < SMALL_ACCESS_SIZE {
                 self.index[idx] as usize
-            } else {
+            } else if (self.len as usize) < SMALL_ACCESS_SIZE {
                 self.index[idx] = self.len as u8;
                 let prev_len = self.len;
                 self.len += 1;
                 prev_len as usize
+            } else {
+                return BurstTrieNode::insert(self.grow(node_ref), key, value, depth, node_ref);
             };
-            self.snodes[small_idx].insert(key, value, depth + 1)
+            BurstTrieNode::insert(self.snodes[small_idx], key, value, depth + 1, &mut self.snodes[small_idx])
         } else if let Some((_, ref mut old_value)) = self.terminator {
             Some(mem::replace(old_value, value))
         } else {
@@ -609,14 +652,12 @@ impl<K, V> SmallAccessNode<K, V> where K: AsRef<str> {
         }
     }
 
-
-    #[inline]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<V> where Q: AsRef<str> {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, node_ref: BurstTrieNodeRef<K, V>) -> Option<V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             let small_idx = self.index[idx] as usize;
             if small_idx < SMALL_ACCESS_SIZE {
-                self.snodes[small_idx].remove(key, depth + 1)
+                BurstTrieNode::remove(self.snodes[small_idx], key, depth + 1, &mut self.snodes[small_idx])
             } else {
                 None
             }
@@ -627,13 +668,12 @@ impl<K, V> SmallAccessNode<K, V> where K: AsRef<str> {
         }
     }
 
-    #[inline]
     fn get<Q: ?Sized>(&self, key: &Q, depth: usize) -> Option<&V> where Q: AsRef<str> {
         if depth < key.as_ref().len() {
             let idx = key.as_ref().as_bytes()[depth] as usize;
             let small_idx = self.index[idx] as usize;
             if small_idx < SMALL_ACCESS_SIZE {
-                self.snodes[small_idx].get(key, depth + 1)
+                BurstTrieNode::get(self.snodes[small_idx], key, depth + 1)
             } else {
                 None
             }
@@ -643,27 +683,14 @@ impl<K, V> SmallAccessNode<K, V> where K: AsRef<str> {
             None
         }
     }
+}
 
-    #[inline]
-    fn get_mut<Q: ?Sized>(&mut self, key: &Q, depth: usize) -> Option<&mut V> where Q: AsRef<str> {
-        if depth < key.as_ref().len() {
-            let idx = key.as_ref().as_bytes()[depth] as usize;
-            
-            let small_idx = self.index[idx] as usize;
-            if small_idx < SMALL_ACCESS_SIZE {
-                self.snodes[small_idx].get_mut(key, depth + 1)
-            } else {
-                None
-            }
-        } else if let Some((_, ref mut v)) = self.terminator {
-            Some(v)
-        } else {
-            None
+impl<K, V> Drop for SmallAccessNode<K, V> where K: AsRef<str> {
+    fn drop(&mut self) {
+        // println!("dropping SmallAccessNode {:?} {} {:?}", self as *const _, self.len, &self.snodes[0..10]);
+        for &ptr in self.snodes.iter() {
+            BurstTrieNode::drop(ptr);
         }
-    }
-
-    fn need_grow(&self) -> bool {
-        self.len as usize >= SMALL_ACCESS_SIZE
     }
 }
 
@@ -686,583 +713,583 @@ impl<K, V> Default for BurstTrieMap<K, V> where K: AsRef<str> {
     fn default() -> BurstTrieMap<K, V> { BurstTrieMap::new() }
 }
 
-pub struct Iter<'a, K: 'a, V: 'a> where K: AsRef<str> {
-    stack: Vec<&'a BurstTrieNode<K, V>>,
-    container_iter: Option<slice::Iter<'a, (K, V)>>,
-    remaining_len: usize
-}
+// pub struct Iter<'a, K: 'a, V: 'a> where K: AsRef<str> {
+//     stack: Vec<&'a BurstTrieNode<K, V>>,
+//     container_iter: Option<slice::Iter<'a, (K, V)>>,
+//     remaining_len: usize
+// }
 
-impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where K: AsRef<str> {}
+// impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where K: AsRef<str> {}
 
-impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
-    type Item = (&'a K, &'a V);
+// impl<'a, K, V> Iterator for Iter<'a, K, V> where K: AsRef<str> {
+//     type Item = (&'a K, &'a V);
 
-    fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        if let Some(ref mut iter) = self.container_iter {
-            let next = iter.next();
-            if let Some(&(ref key, ref value)) = next {
-                self.remaining_len -= 1;
-                return Some((key, value));
-            }
-        }
+//     fn next(&mut self) -> Option<(&'a K, &'a V)> {
+//         if let Some(ref mut iter) = self.container_iter {
+//             let next = iter.next();
+//             if let Some(&(ref key, ref value)) = next {
+//                 self.remaining_len -= 1;
+//                 return Some((key, value));
+//             }
+//         }
 
-        while let Some(node) = self.stack.pop() {
-            match *node {
-                BurstTrieNode::Container(box ref container) => {
-                    let mut iter = container.items.iter();
-                    let next = iter.next();
-                    mem::replace(&mut self.container_iter, Some(iter)); 
-                    if let Some(&(ref key, ref value)) = next {
-                        self.remaining_len -= 1;
-                        return Some((key, value));
-                    }
-                },
-                BurstTrieNode::Access(box ref access) => {
-                    // add to stack in reverse order
-                    for i in (1..ALPHABET_SIZE + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        match access.nodes[idx] {
-                            ref node @ BurstTrieNode::Container(_) |
-                            ref node @ BurstTrieNode::SmallAccess(_) |
-                            ref node @ BurstTrieNode::Access(_) => {
-                                self.stack.push(node);
-                            },
-                            BurstTrieNode::Empty => ()
-                        }
-                    }
+//         while let Some(node) = self.stack.pop() {
+//             match *node {
+//                 BurstTrieNode::Container(box ref container) => {
+//                     let mut iter = container.items.iter();
+//                     let next = iter.next();
+//                     mem::replace(&mut self.container_iter, Some(iter)); 
+//                     if let Some(&(ref key, ref value)) = next {
+//                         self.remaining_len -= 1;
+//                         return Some((key, value));
+//                     }
+//                 },
+//                 BurstTrieNode::Access(box ref access) => {
+//                     // add to stack in reverse order
+//                     for i in (1..ALPHABET_SIZE + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         match access.nodes[idx] {
+//                             ref node @ BurstTrieNode::Container(_) |
+//                             ref node @ BurstTrieNode::SmallAccess(_) |
+//                             ref node @ BurstTrieNode::Access(_) => {
+//                                 self.stack.push(node);
+//                             },
+//                             BurstTrieNode::Empty => ()
+//                         }
+//                     }
 
-                    if let Some((ref key, ref value)) = access.terminator {
-                        self.remaining_len -= 1;
-                        return Some((key, value));
-                    }
-                },
-                BurstTrieNode::SmallAccess(box ref small) => {
-                    // add to stack in reverse order
-                    for i in (1..ALPHABET_SIZE + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        let small_idx = small.index[idx] as usize;
-                        if small_idx < SMALL_ACCESS_SIZE {
-                            match small.snodes[small_idx] {
-                                ref node @ BurstTrieNode::Container(_) |
-                                ref node @ BurstTrieNode::SmallAccess(_) |
-                                ref node @ BurstTrieNode::Access(_) => {
-                                    self.stack.push(node);
-                                },
-                                BurstTrieNode::Empty => ()
-                            }
-                        }
-                    }
+//                     if let Some((ref key, ref value)) = access.terminator {
+//                         self.remaining_len -= 1;
+//                         return Some((key, value));
+//                     }
+//                 },
+//                 BurstTrieNode::SmallAccess(box ref small) => {
+//                     // add to stack in reverse order
+//                     for i in (1..ALPHABET_SIZE + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         let small_idx = small.index[idx] as usize;
+//                         if small_idx < SMALL_ACCESS_SIZE {
+//                             match small.snodes[small_idx] {
+//                                 ref node @ BurstTrieNode::Container(_) |
+//                                 ref node @ BurstTrieNode::SmallAccess(_) |
+//                                 ref node @ BurstTrieNode::Access(_) => {
+//                                     self.stack.push(node);
+//                                 },
+//                                 BurstTrieNode::Empty => ()
+//                             }
+//                         }
+//                     }
 
-                    if let Some((ref key, ref value)) = small.terminator {
-                        self.remaining_len -= 1;
-                        return Some((key, value));
-                    }
-                },
-                BurstTrieNode::Empty => ()
-            }
-        }
-        None
-    }
+//                     if let Some((ref key, ref value)) = small.terminator {
+//                         self.remaining_len -= 1;
+//                         return Some((key, value));
+//                     }
+//                 },
+//                 BurstTrieNode::Empty => ()
+//             }
+//         }
+//         None
+//     }
 
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining_len, Some(self.remaining_len))
-    }
-}
+//     #[inline]
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         (self.remaining_len, Some(self.remaining_len))
+//     }
+// }
 
-pub struct IntoIter<K, V> where K: AsRef<str> {
-    stack: Vec<BurstTrieNode<K, V>>,
-    container_iter: Option<vec::IntoIter<(K, V)>>,
-    remaining_len: usize
-}
+// pub struct IntoIter<K, V> where K: AsRef<str> {
+//     stack: Vec<BurstTrieNode<K, V>>,
+//     container_iter: Option<vec::IntoIter<(K, V)>>,
+//     remaining_len: usize
+// }
 
-impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: AsRef<str> {}
+// impl<K, V> ExactSizeIterator for IntoIter<K, V> where K: AsRef<str> {}
 
-impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
-    type Item = (K, V);
+// impl<K, V> Iterator for IntoIter<K, V> where K: AsRef<str> {
+//     type Item = (K, V);
 
-    fn next(&mut self) -> Option<(K, V)> {
-        if let Some(ref mut iter) = self.container_iter {
-            let next = iter.next();
-            if next.is_some() {
-                self.remaining_len -= 1;
-                return next;
-            }
-        }
+//     fn next(&mut self) -> Option<(K, V)> {
+//         if let Some(ref mut iter) = self.container_iter {
+//             let next = iter.next();
+//             if next.is_some() {
+//                 self.remaining_len -= 1;
+//                 return next;
+//             }
+//         }
 
-        while let Some(node) = self.stack.pop() {
-            match node {
-                BurstTrieNode::Container(container) => {
-                    let mut iter = container.items.into_iter();
-                    let next = iter.next();
-                    mem::replace(&mut self.container_iter, Some(iter));
-                    if next.is_some() {
-                        self.remaining_len -= 1;
-                        return next;
-                    }
-                },
-                BurstTrieNode::Access(box mut access) => {
-                    // add to stack in reverse order
-                    for i in (1..ALPHABET_SIZE + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        let node = mem::replace(&mut access.nodes[idx], BurstTrieNode::Empty);
-                        match node {
-                            BurstTrieNode::Container(_) |
-                            BurstTrieNode::SmallAccess(_) |
-                            BurstTrieNode::Access(_) => {
-                                self.stack.push(node);
-                            },
-                            BurstTrieNode::Empty => ()
-                        }
-                    }
+//         while let Some(node) = self.stack.pop() {
+//             match node {
+//                 BurstTrieNode::Container(container) => {
+//                     let mut iter = container.items.into_iter();
+//                     let next = iter.next();
+//                     mem::replace(&mut self.container_iter, Some(iter));
+//                     if next.is_some() {
+//                         self.remaining_len -= 1;
+//                         return next;
+//                     }
+//                 },
+//                 BurstTrieNode::Access(box mut access) => {
+//                     // add to stack in reverse order
+//                     for i in (1..ALPHABET_SIZE + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         let node = mem::replace(&mut access.nodes[idx], BurstTrieNode::Empty);
+//                         match node {
+//                             BurstTrieNode::Container(_) |
+//                             BurstTrieNode::SmallAccess(_) |
+//                             BurstTrieNode::Access(_) => {
+//                                 self.stack.push(node);
+//                             },
+//                             BurstTrieNode::Empty => ()
+//                         }
+//                     }
 
 
-                    if access.terminator.is_some() {
-                        self.remaining_len -= 1;
-                        return access.terminator;
-                    }
-                },
-                BurstTrieNode::SmallAccess(box mut small) => {
-                    // add to stack in reverse order
-                    for i in (1..ALPHABET_SIZE + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        let small_idx = small.index[idx] as usize;
-                        if small_idx < SMALL_ACCESS_SIZE {
-                            let node = mem::replace(&mut small.snodes[small_idx], BurstTrieNode::Empty);
-                            match node {
-                                BurstTrieNode::Container(_) |
-                                BurstTrieNode::SmallAccess(_) |
-                                BurstTrieNode::Access(_) => {
-                                    self.stack.push(node);
-                                },
-                                BurstTrieNode::Empty => ()
-                            }
-                        }
-                    }
+//                     if access.terminator.is_some() {
+//                         self.remaining_len -= 1;
+//                         return access.terminator;
+//                     }
+//                 },
+//                 BurstTrieNode::SmallAccess(box mut small) => {
+//                     // add to stack in reverse order
+//                     for i in (1..ALPHABET_SIZE + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         let small_idx = small.index[idx] as usize;
+//                         if small_idx < SMALL_ACCESS_SIZE {
+//                             let node = mem::replace(&mut small.snodes[small_idx], BurstTrieNode::Empty);
+//                             match node {
+//                                 BurstTrieNode::Container(_) |
+//                                 BurstTrieNode::SmallAccess(_) |
+//                                 BurstTrieNode::Access(_) => {
+//                                     self.stack.push(node);
+//                                 },
+//                                 BurstTrieNode::Empty => ()
+//                             }
+//                         }
+//                     }
 
-                    if small.terminator.is_some() {
-                        self.remaining_len -= 1;
-                        return small.terminator;
-                    }
-                },
-                BurstTrieNode::Empty => ()
-            }
-        }
-        None
-    }
+//                     if small.terminator.is_some() {
+//                         self.remaining_len -= 1;
+//                         return small.terminator;
+//                     }
+//                 },
+//                 BurstTrieNode::Empty => ()
+//             }
+//         }
+//         None
+//     }
 
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining_len, Some(self.remaining_len))
-    }
-}
+//     #[inline]
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         (self.remaining_len, Some(self.remaining_len))
+//     }
+// }
 
-pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: AsRef<str>, Q: AsRef<str> {
-    stack: VecDeque<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
-    curr_item: Option<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
-    min: Bound<&'a Q>,
-    max: Bound<&'a Q>
-}
+// pub struct Range<'a, K: 'a, V: 'a, Q: 'a + ?Sized> where K: AsRef<str>, Q: AsRef<str> {
+//     stack: VecDeque<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
+//     curr_item: Option<(&'a BurstTrieNode<K, V>, u16, bool, u16, u16)>,
+//     min: Bound<&'a Q>,
+//     max: Bound<&'a Q>
+// }
 
-impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
+// impl<'a, K, V, Q: ?Sized> Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
 
-    fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q> {
-        let mut range = Range {
-            stack: VecDeque::new(),
-            curr_item: None,
-            min: min,
-            max: max
-        };
+//     fn new(root: &'a BurstTrieNode<K, V>, min: Bound<&'a Q>, max: Bound<&'a Q>) -> Range<'a, K, V, Q> {
+//         let mut range = Range {
+//             stack: VecDeque::new(),
+//             curr_item: None,
+//             min: min,
+//             max: max
+//         };
 
-        match *root {
-            BurstTrieNode::Container(box ref container) =>
-                range.stack.push_back((root, 0, true, 0, container.items.len() as u16)),
-            BurstTrieNode::Access(_) |
-            BurstTrieNode::SmallAccess(_)  =>
-                range.stack.push_back((root, 0, true, 0, ALPHABET_SIZE as u16)),
-            BurstTrieNode::Empty => return range
-        }
+//         match *root {
+//             BurstTrieNode::Container(box ref container) =>
+//                 range.stack.push_back((root, 0, true, 0, container.items.len() as u16)),
+//             BurstTrieNode::Access(_) |
+//             BurstTrieNode::SmallAccess(_)  =>
+//                 range.stack.push_back((root, 0, true, 0, ALPHABET_SIZE as u16)),
+//             BurstTrieNode::Empty => return range
+//         }
 
-        range.find_min();
-        range.find_max();
+//         range.find_min();
+//         range.find_max();
 
-        range
-    }
+//         range
+//     }
 
-    fn find_min(&mut self) {
-        let (min_key, min_included) = match self.min {
-            Bound::Unbounded => return,
-            Bound::Included(key) => (key, true),
-            Bound::Excluded(key) => (key, false)
-        };
+//     fn find_min(&mut self) {
+//         let (min_key, min_included) = match self.min {
+//             Bound::Unbounded => return,
+//             Bound::Included(key) => (key, true),
+//             Bound::Excluded(key) => (key, false)
+//         };
 
-        while let Some((node, depth, _, _, _)) = self.stack.pop_back() {
-            let depthsz = depth as usize;
-            match *node {
-                BurstTrieNode::Container(box ref container) => {
-                    let res_bs = opt_binary_search_by(&container.items, |other| {
-                        other.0.as_ref()[depthsz..].cmp(&min_key.as_ref()[depthsz..])
-                    });
-                    let start_pos = match res_bs {
-                        Ok(pos) if ! min_included => pos + 1,
-                        Ok(pos) | Err(pos) => pos
-                    };
-                    self.stack.push_back((node, depth, false, start_pos as u16, container.items.len() as u16));
-                    // can only hit a container once
-                    return;
-                },
-                BurstTrieNode::Access(box ref access) => {
-                    if depthsz < min_key.as_ref().len() {
-                        let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
-                        self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
-                        match access.nodes[min_key_byte] {
-                            BurstTrieNode::Container(box ref container) =>
-                                self.stack.push_back((&access.nodes[min_key_byte], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) |
-                            BurstTrieNode::SmallAccess(_) =>
-                                self.stack.push_back((&access.nodes[min_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            BurstTrieNode::Empty => return // exit
-                        }
-                    } else {
-                        // re-add node to the stack with correct terminator and exit
-                        self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
-                        return;
-                    }
-                },
-                BurstTrieNode::SmallAccess(box ref small) => {
-                    if depthsz < min_key.as_ref().len() {
-                        let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
-                        self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
-                        let small_idx = small.index[min_key_byte] as usize;
-                        if small_idx < SMALL_ACCESS_SIZE {
-                            match small.snodes[small_idx] {
-                                BurstTrieNode::Container(box ref container) =>
-                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
-                                BurstTrieNode::Access(_) |
-                                BurstTrieNode::SmallAccess(_) =>
-                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                                BurstTrieNode::Empty => return // exit
-                            }
-                        }
-                    } else {
-                        // re-add node to the stack with correct terminator and exit
-                        self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
-                        return;
-                    }
-                },
-                BurstTrieNode::Empty => ()
-            }
-        }
-    }
+//         while let Some((node, depth, _, _, _)) = self.stack.pop_back() {
+//             let depthsz = depth as usize;
+//             match *node {
+//                 BurstTrieNode::Container(box ref container) => {
+//                     let res_bs = opt_binary_search_by(&container.items, |other| {
+//                         other.0.as_ref()[depthsz..].cmp(&min_key.as_ref()[depthsz..])
+//                     });
+//                     let start_pos = match res_bs {
+//                         Ok(pos) if ! min_included => pos + 1,
+//                         Ok(pos) | Err(pos) => pos
+//                     };
+//                     self.stack.push_back((node, depth, false, start_pos as u16, container.items.len() as u16));
+//                     // can only hit a container once
+//                     return;
+//                 },
+//                 BurstTrieNode::Access(box ref access) => {
+//                     if depthsz < min_key.as_ref().len() {
+//                         let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
+//                         self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
+//                         match access.nodes[min_key_byte] {
+//                             BurstTrieNode::Container(box ref container) =>
+//                                 self.stack.push_back((&access.nodes[min_key_byte], depth + 1, false, 0, container.items.len() as u16)),
+//                             BurstTrieNode::Access(_) |
+//                             BurstTrieNode::SmallAccess(_) =>
+//                                 self.stack.push_back((&access.nodes[min_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                             BurstTrieNode::Empty => return // exit
+//                         }
+//                     } else {
+//                         // re-add node to the stack with correct terminator and exit
+//                         self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
+//                         return;
+//                     }
+//                 },
+//                 BurstTrieNode::SmallAccess(box ref small) => {
+//                     if depthsz < min_key.as_ref().len() {
+//                         let min_key_byte = min_key.as_ref().as_bytes()[depthsz] as usize;
+//                         self.stack.push_back((node, depth, false, min_key_byte as u16 + 1, ALPHABET_SIZE as u16));
+//                         let small_idx = small.index[min_key_byte] as usize;
+//                         if small_idx < SMALL_ACCESS_SIZE {
+//                             match small.snodes[small_idx] {
+//                                 BurstTrieNode::Container(box ref container) =>
+//                                     self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+//                                 BurstTrieNode::Access(_) |
+//                                 BurstTrieNode::SmallAccess(_) =>
+//                                     self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                                 BurstTrieNode::Empty => return // exit
+//                             }
+//                         }
+//                     } else {
+//                         // re-add node to the stack with correct terminator and exit
+//                         self.stack.push_back((node, depth, min_included, 0, ALPHABET_SIZE as u16));
+//                         return;
+//                     }
+//                 },
+//                 BurstTrieNode::Empty => ()
+//             }
+//         }
+//     }
 
-    fn find_max(&mut self) {
-        let (max_key, max_included) = match self.max {
-            Bound::Unbounded => return,
-            Bound::Included(key) => (key, true),
-            Bound::Excluded(key) => (key, false)
-        };
+//     fn find_max(&mut self) {
+//         let (max_key, max_included) = match self.max {
+//             Bound::Unbounded => return,
+//             Bound::Included(key) => (key, true),
+//             Bound::Excluded(key) => (key, false)
+//         };
 
-        while let Some((node, depth, terminator, start_pos, _)) = self.stack.pop_front() {
-            let depthsz = depth as usize;
-            match *node {
-                BurstTrieNode::Container(box ref container) => {
-                    let res_bs = opt_binary_search_by(&container.items, |other| {
-                        other.0.as_ref()[depthsz..].cmp(&max_key.as_ref()[depthsz..])
-                    });
-                    let end_pos = match res_bs {
-                        Ok(pos) if max_included => pos + 1,
-                        Ok(pos) | Err(pos) => pos
-                    };
-                    self.stack.push_front((node, depth, false, start_pos, end_pos as u16));
-                    // can only hit a container once
-                    return;
-                },
-                BurstTrieNode::Access(box ref access) => {
-                    if depthsz < max_key.as_ref().len() {
-                        let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
-                        self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
-                        match access.nodes[max_key_byte] {
-                            BurstTrieNode::Container(box ref container) =>
-                                self.stack.push_front((&access.nodes[max_key_byte], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) |
-                            BurstTrieNode::SmallAccess(_) =>
-                                self.stack.push_front((&access.nodes[max_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            BurstTrieNode::Empty => return // exit
-                        }
-                    } else {
-                        // re-add node to the stack with correct terminator and exit
-                        self.stack.push_front((node, depth, max_included, 0, 0));
-                        return;
-                    }
-                },
-                BurstTrieNode::SmallAccess(box ref small) => {
-                    if depthsz < max_key.as_ref().len() {
-                        let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
-                        self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
-                        let small_idx = small.index[max_key_byte] as usize;
-                        if small_idx < SMALL_ACCESS_SIZE {
-                            match small.snodes[small_idx] {
-                                BurstTrieNode::Container(box ref container) =>
-                                    self.stack.push_front((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
-                                BurstTrieNode::Access(_) |
-                                BurstTrieNode::SmallAccess(_) =>
-                                    self.stack.push_front((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                                BurstTrieNode::Empty => return // exit
-                            }
-                        }
-                    } else {
-                        // re-add node to the stack with correct terminator and exit
-                        self.stack.push_front((node, depth, max_included, 0, 0));
-                        return;
-                    }
-                },
-                BurstTrieNode::Empty => ()
-            }
-        }
-    }
+//         while let Some((node, depth, terminator, start_pos, _)) = self.stack.pop_front() {
+//             let depthsz = depth as usize;
+//             match *node {
+//                 BurstTrieNode::Container(box ref container) => {
+//                     let res_bs = opt_binary_search_by(&container.items, |other| {
+//                         other.0.as_ref()[depthsz..].cmp(&max_key.as_ref()[depthsz..])
+//                     });
+//                     let end_pos = match res_bs {
+//                         Ok(pos) if max_included => pos + 1,
+//                         Ok(pos) | Err(pos) => pos
+//                     };
+//                     self.stack.push_front((node, depth, false, start_pos, end_pos as u16));
+//                     // can only hit a container once
+//                     return;
+//                 },
+//                 BurstTrieNode::Access(box ref access) => {
+//                     if depthsz < max_key.as_ref().len() {
+//                         let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
+//                         self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
+//                         match access.nodes[max_key_byte] {
+//                             BurstTrieNode::Container(box ref container) =>
+//                                 self.stack.push_front((&access.nodes[max_key_byte], depth + 1, false, 0, container.items.len() as u16)),
+//                             BurstTrieNode::Access(_) |
+//                             BurstTrieNode::SmallAccess(_) =>
+//                                 self.stack.push_front((&access.nodes[max_key_byte], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                             BurstTrieNode::Empty => return // exit
+//                         }
+//                     } else {
+//                         // re-add node to the stack with correct terminator and exit
+//                         self.stack.push_front((node, depth, max_included, 0, 0));
+//                         return;
+//                     }
+//                 },
+//                 BurstTrieNode::SmallAccess(box ref small) => {
+//                     if depthsz < max_key.as_ref().len() {
+//                         let max_key_byte = max_key.as_ref().as_bytes()[depthsz] as usize;
+//                         self.stack.push_front((node, depth, terminator, start_pos, max_key_byte as u16));
+//                         let small_idx = small.index[max_key_byte] as usize;
+//                         if small_idx < SMALL_ACCESS_SIZE {
+//                             match small.snodes[small_idx] {
+//                                 BurstTrieNode::Container(box ref container) =>
+//                                     self.stack.push_front((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+//                                 BurstTrieNode::Access(_) |
+//                                 BurstTrieNode::SmallAccess(_) =>
+//                                     self.stack.push_front((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                                 BurstTrieNode::Empty => return // exit
+//                             }
+//                         }
+//                     } else {
+//                         // re-add node to the stack with correct terminator and exit
+//                         self.stack.push_front((node, depth, max_included, 0, 0));
+//                         return;
+//                     }
+//                 },
+//                 BurstTrieNode::Empty => ()
+//             }
+//         }
+//     }
 
-    fn find_next(&mut self) -> Option<(&'a K, &'a V)> {
-        if let Some((&BurstTrieNode::Container(box ref container), _, _, ref mut start_pos, end_pos)) = self.curr_item {
-            if *start_pos < end_pos {
-                let (ref key, ref value) = container.items[*start_pos as usize];
-                *start_pos += 1; // advance iterator
-                return Some((key, value));
-            }
-        }
+//     fn find_next(&mut self) -> Option<(&'a K, &'a V)> {
+//         if let Some((&BurstTrieNode::Container(box ref container), _, _, ref mut start_pos, end_pos)) = self.curr_item {
+//             if *start_pos < end_pos {
+//                 let (ref key, ref value) = container.items[*start_pos as usize];
+//                 *start_pos += 1; // advance iterator
+//                 return Some((key, value));
+//             }
+//         }
 
-        while let Some((node, depth, terminator, start_pos, end_pos)) = self.stack.pop_back() {
-            match *node {
-                BurstTrieNode::Container(box ref container) => {
-                    if start_pos < end_pos {
-                        self.curr_item = Some((node, depth, terminator, start_pos + 1, end_pos));
-                        let (ref key, ref value) = container.items[start_pos as usize];
-                        return Some((key, value));
-                    }
-                },
-                BurstTrieNode::Access(box ref access) => {
-                    // add to stack in reverse order
-                    for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        match access.nodes[idx] {
-                            BurstTrieNode::Container(box ref container) =>
-                                self.stack.push_back((&access.nodes[idx], depth + 1, false, 0, container.items.len() as u16)),
-                            BurstTrieNode::Access(_) |
-                            BurstTrieNode::SmallAccess(_) =>
-                                self.stack.push_back((&access.nodes[idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                            BurstTrieNode::Empty => ()
-                        }
-                    }
+//         while let Some((node, depth, terminator, start_pos, end_pos)) = self.stack.pop_back() {
+//             match *node {
+//                 BurstTrieNode::Container(box ref container) => {
+//                     if start_pos < end_pos {
+//                         self.curr_item = Some((node, depth, terminator, start_pos + 1, end_pos));
+//                         let (ref key, ref value) = container.items[start_pos as usize];
+//                         return Some((key, value));
+//                     }
+//                 },
+//                 BurstTrieNode::Access(box ref access) => {
+//                     // add to stack in reverse order
+//                     for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         match access.nodes[idx] {
+//                             BurstTrieNode::Container(box ref container) =>
+//                                 self.stack.push_back((&access.nodes[idx], depth + 1, false, 0, container.items.len() as u16)),
+//                             BurstTrieNode::Access(_) |
+//                             BurstTrieNode::SmallAccess(_) =>
+//                                 self.stack.push_back((&access.nodes[idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                             BurstTrieNode::Empty => ()
+//                         }
+//                     }
 
-                    if terminator {
-                        if let Some((ref key, ref value)) = access.terminator {
-                            return Some((key, value));
-                        }
-                    }
-                },
-                BurstTrieNode::SmallAccess(box ref small) => {
-                    // add to stack in reverse order
-                    for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
-                        let idx = ALPHABET_SIZE - i;
-                        let small_idx = small.index[idx] as usize;
-                        if small_idx < SMALL_ACCESS_SIZE {
-                            match small.snodes[small_idx] {
-                                BurstTrieNode::Container(box ref container) =>
-                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
-                                BurstTrieNode::Access(_) |
-                                BurstTrieNode::SmallAccess(_) =>
-                                    self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
-                                BurstTrieNode::Empty => ()
-                            }
-                        }
-                    }
+//                     if terminator {
+//                         if let Some((ref key, ref value)) = access.terminator {
+//                             return Some((key, value));
+//                         }
+//                     }
+//                 },
+//                 BurstTrieNode::SmallAccess(box ref small) => {
+//                     // add to stack in reverse order
+//                     for i in ((ALPHABET_SIZE - end_pos as usize) + 1 .. (ALPHABET_SIZE - start_pos as usize) + 1) {
+//                         let idx = ALPHABET_SIZE - i;
+//                         let small_idx = small.index[idx] as usize;
+//                         if small_idx < SMALL_ACCESS_SIZE {
+//                             match small.snodes[small_idx] {
+//                                 BurstTrieNode::Container(box ref container) =>
+//                                     self.stack.push_back((&small.snodes[small_idx], depth + 1, false, 0, container.items.len() as u16)),
+//                                 BurstTrieNode::Access(_) |
+//                                 BurstTrieNode::SmallAccess(_) =>
+//                                     self.stack.push_back((&small.snodes[small_idx], depth + 1, true, 0, ALPHABET_SIZE as u16)),
+//                                 BurstTrieNode::Empty => ()
+//                             }
+//                         }
+//                     }
 
-                    if terminator {
-                        if let Some((ref key, ref value)) = small.terminator {
-                            return Some((key, value));
-                        }
-                    }
-                },
-                BurstTrieNode::Empty => ()
-            }
-        }
+//                     if terminator {
+//                         if let Some((ref key, ref value)) = small.terminator {
+//                             return Some((key, value));
+//                         }
+//                     }
+//                 },
+//                 BurstTrieNode::Empty => ()
+//             }
+//         }
 
-        None
-    }
-}
+//         None
+//     }
+// }
 
-impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
-    type Item = (&'a K, &'a V);
+// impl<'a, K, V, Q: ?Sized> Iterator for Range<'a, K, V, Q> where K: AsRef<str>, Q: AsRef<str> {
+//     type Item = (&'a K, &'a V);
 
-    #[inline(always)]
-    fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        self.find_next()
-    }
+//     #[inline(always)]
+//     fn next(&mut self) -> Option<(&'a K, &'a V)> {
+//         self.find_next()
+//     }
 
-    #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.stack.len(), None)
-    }
-}
+//     #[inline(always)]
+//     fn size_hint(&self) -> (usize, Option<usize>) {
+//         (self.stack.len(), None)
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
-    use super::BurstTrieMap;
+    use super::{BurstTrieMap, BurstTrieNode};
     use std::collections::Bound;
     use rand::*;
 
-    #[test]
-    fn test_iter() {
-        let mut map = BurstTrieMap::new();
+    // #[test]
+    // fn test_iter() {
+    //     let mut map = BurstTrieMap::new();
 
-        for i in (100000..999999) {
-            map.insert(i.to_string(), i);
-        }
+    //     for i in (100000..999999) {
+    //         map.insert(i.to_string(), i);
+    //     }
 
-        let mut i = 100000usize;
-        for (key, value) in map.iter() {
-            assert_eq!(key.parse::<usize>().unwrap(), i);
-            assert_eq!(*value, i);
-            i += 1;
-        }
-        assert_eq!(i, 999999);
-    }
+    //     let mut i = 100000usize;
+    //     for (key, value) in map.iter() {
+    //         assert_eq!(key.parse::<usize>().unwrap(), i);
+    //         assert_eq!(*value, i);
+    //         i += 1;
+    //     }
+    //     assert_eq!(i, 999999);
+    // }
 
-    #[test]
-    fn test_range1() {
-        let mut map = BurstTrieMap::new();
+    // #[test]
+    // fn test_range1() {
+    //     let mut map = BurstTrieMap::new();
 
-        for i in (100000..999999) {
-            map.insert(i.to_string(), i);
-        }
+    //     for i in (100000..999999) {
+    //         map.insert(i.to_string(), i);
+    //     }
 
-        let mut i = 100000usize;
-        for (key, value) in map.range::<String>(Bound::Unbounded, Bound::Unbounded) {
-            assert_eq!(key.parse::<usize>().unwrap(), i);
-            assert_eq!(*value, i);
-            i += 1;
-        }
-        assert_eq!(i, 999999);
+    //     let mut i = 100000usize;
+    //     for (key, value) in map.range::<String>(Bound::Unbounded, Bound::Unbounded) {
+    //         assert_eq!(key.parse::<usize>().unwrap(), i);
+    //         assert_eq!(*value, i);
+    //         i += 1;
+    //     }
+    //     assert_eq!(i, 999999);
 
-        for j in (999000..999999) {
-            let mut i = j;
-            for (key, value) in map.range(Bound::Included(&j.to_string()), Bound::Unbounded) {
-                assert_eq!(key.parse::<usize>().unwrap(), i);
-                assert_eq!(*value, i);
-                i += 1;
-            }
-            assert_eq!(i, 999999);
-        }
+    //     for j in (999000..999999) {
+    //         let mut i = j;
+    //         for (key, value) in map.range(Bound::Included(&j.to_string()), Bound::Unbounded) {
+    //             assert_eq!(key.parse::<usize>().unwrap(), i);
+    //             assert_eq!(*value, i);
+    //             i += 1;
+    //         }
+    //         assert_eq!(i, 999999);
+    //     }
 
-        for j in (999000..999999) {
-            let mut i = j + 1;
-            for (key, value) in map.range(Bound::Excluded(&j.to_string()), Bound::Unbounded) {
-                assert_eq!(key.parse::<usize>().unwrap(), i);
-                assert_eq!(*value, i);
-                i += 1;
-            }
-            assert_eq!(i, 999999);
-        }
+    //     for j in (999000..999999) {
+    //         let mut i = j + 1;
+    //         for (key, value) in map.range(Bound::Excluded(&j.to_string()), Bound::Unbounded) {
+    //             assert_eq!(key.parse::<usize>().unwrap(), i);
+    //             assert_eq!(*value, i);
+    //             i += 1;
+    //         }
+    //         assert_eq!(i, 999999);
+    //     }
 
-        assert_eq!(map.range(Bound::Included("999998"), Bound::Unbounded).count(), 1);
-        assert_eq!(map.range(Bound::Excluded("999998"), Bound::Unbounded).count(), 0);
-        assert_eq!(map.range(Bound::Excluded("999999"), Bound::Unbounded).count(), 0);
+    //     assert_eq!(map.range(Bound::Included("999998"), Bound::Unbounded).count(), 1);
+    //     assert_eq!(map.range(Bound::Excluded("999998"), Bound::Unbounded).count(), 0);
+    //     assert_eq!(map.range(Bound::Excluded("999999"), Bound::Unbounded).count(), 0);
 
-        // 2 items that will be at the terminator slots
-        map.insert("1".to_string(), 1);
-        map.insert("2".to_string(), 2);
-        assert_eq!(map.range(Bound::Included("1"), Bound::Unbounded).count(), (999999 - 100000) + 2);
-        assert_eq!(map.range(Bound::Excluded("1"), Bound::Unbounded).count(), (999999 - 100000) + 1);
-        assert_eq!(map.range(Bound::Included("2"), Bound::Unbounded).count(), (999999 - 100000) + 1 - 100000);
-        assert_eq!(map.range(Bound::Excluded("2"), Bound::Unbounded).count(), (999999 - 100000) - 100000);
-        // max specified
-        assert_eq!(map.range(Bound::Excluded("1"), Bound::Excluded("2")).count(), 100000);
-        assert_eq!(map.range(Bound::Excluded("2"), Bound::Excluded("3")).count(), 100000);
-        assert_eq!(map.range(Bound::Included("1"), Bound::Included("2")).count(), 100000 + 2);
-        assert_eq!(map.range(Bound::Included("2"), Bound::Included("3")).count(), 100000 + 1);
-    }
+    //     // 2 items that will be at the terminator slots
+    //     map.insert("1".to_string(), 1);
+    //     map.insert("2".to_string(), 2);
+    //     assert_eq!(map.range(Bound::Included("1"), Bound::Unbounded).count(), (999999 - 100000) + 2);
+    //     assert_eq!(map.range(Bound::Excluded("1"), Bound::Unbounded).count(), (999999 - 100000) + 1);
+    //     assert_eq!(map.range(Bound::Included("2"), Bound::Unbounded).count(), (999999 - 100000) + 1 - 100000);
+    //     assert_eq!(map.range(Bound::Excluded("2"), Bound::Unbounded).count(), (999999 - 100000) - 100000);
+    //     // max specified
+    //     assert_eq!(map.range(Bound::Excluded("1"), Bound::Excluded("2")).count(), 100000);
+    //     assert_eq!(map.range(Bound::Excluded("2"), Bound::Excluded("3")).count(), 100000);
+    //     assert_eq!(map.range(Bound::Included("1"), Bound::Included("2")).count(), 100000 + 2);
+    //     assert_eq!(map.range(Bound::Included("2"), Bound::Included("3")).count(), 100000 + 1);
+    // }
 
-    #[test]
-    fn test_range2() {
-        use rand::{Rng, weak_rng};
-        use std::collections::{BTreeMap, Bound};
+    // #[test]
+    // fn test_range2() {
+    //     use rand::{Rng, weak_rng};
+    //     use std::collections::{BTreeMap, Bound};
 
-        let mut rng = weak_rng();
-        let mut tree = BTreeMap::new();
-        let mut trie = BurstTrieMap::new();
-        let value = 0usize;
+    //     let mut rng = weak_rng();
+    //     let mut tree = BTreeMap::new();
+    //     let mut trie = BurstTrieMap::new();
+    //     let value = 0usize;
 
-        (0..10000).map(|_| {
-            let key_len = rng.gen_range(0, 100);
-            let key = rng.gen_ascii_chars().take(key_len).collect::<String>();
-            tree.insert(key.clone(), value);
-            trie.insert(key, value);
-        }).count();
+    //     (0..10000).map(|_| {
+    //         let key_len = rng.gen_range(0, 100);
+    //         let key = rng.gen_ascii_chars().take(key_len).collect::<String>();
+    //         tree.insert(key.clone(), value);
+    //         trie.insert(key, value);
+    //     }).count();
 
-        let keys = tree.keys().collect::<Vec<_>>();
-        assert_eq!(keys, trie.keys().collect::<Vec<_>>());
+    //     let keys = tree.keys().collect::<Vec<_>>();
+    //     assert_eq!(keys, trie.keys().collect::<Vec<_>>());
 
-        for _ in (0..1000) {
-            let x0 = rng.gen_range(0usize, keys.len());
-            let x1 = rng.gen_range(x0, keys.len());
-            let min1 = Bound::Included(keys[x0]);
-            let max1 = Bound::Excluded(keys[x1]);
-            let min2 = Bound::Included(keys[x0]);
-            let max2 = Bound::Excluded(keys[x1]);
-            for ((key1, _), (key2, _)) in tree.range(min1, max1).zip(trie.range(min2, max2)) {
-                assert_eq!(key1, key2);
-            }
-        }
-    }
+    //     for _ in (0..1000) {
+    //         let x0 = rng.gen_range(0usize, keys.len());
+    //         let x1 = rng.gen_range(x0, keys.len());
+    //         let min1 = Bound::Included(keys[x0]);
+    //         let max1 = Bound::Excluded(keys[x1]);
+    //         let min2 = Bound::Included(keys[x0]);
+    //         let max2 = Bound::Excluded(keys[x1]);
+    //         for ((key1, _), (key2, _)) in tree.range(min1, max1).zip(trie.range(min2, max2)) {
+    //             assert_eq!(key1, key2);
+    //         }
+    //     }
+    // }
 
-    #[test]
-    fn test_into_iter() {
-        let mut map = BurstTrieMap::new();
+    // #[test]
+    // fn test_into_iter() {
+    //     let mut map = BurstTrieMap::new();
 
-        // use a dropable value so it crashes if double drop
-        for i in (100000..999999) {
-            map.insert(i.to_string(), i.to_string());
-        }
+    //     // use a dropable value so it crashes if double drop
+    //     for i in (100000..999999) {
+    //         map.insert(i.to_string(), i.to_string());
+    //     }
 
-        let mut i = 100000usize;
-        for (key, value) in map.into_iter() {
-            assert_eq!(key.parse::<usize>().unwrap(), i);
-            assert_eq!(value.parse::<usize>().unwrap(), i);
-            i += 1;
-        }
-        assert_eq!(i, 999999);
-    }
+    //     let mut i = 100000usize;
+    //     for (key, value) in map.into_iter() {
+    //         assert_eq!(key.parse::<usize>().unwrap(), i);
+    //         assert_eq!(value.parse::<usize>().unwrap(), i);
+    //         i += 1;
+    //     }
+    //     assert_eq!(i, 999999);
+    // }
 
-    #[test]
-    fn test_keys() {
-        let mut map = BurstTrieMap::new();
+    // #[test]
+    // fn test_keys() {
+    //     let mut map = BurstTrieMap::new();
 
-        for i in (100000..999999) {
-            map.insert(i.to_string(), i);
-        }
+    //     for i in (100000..999999) {
+    //         map.insert(i.to_string(), i);
+    //     }
 
-        let mut i = 100000usize;
-        for key in map.keys() {
-            assert_eq!(key.parse::<usize>().unwrap(), i);
-            i += 1;
-        }
-        assert_eq!(i, 999999);
-    }
+    //     let mut i = 100000usize;
+    //     for key in map.keys() {
+    //         assert_eq!(key.parse::<usize>().unwrap(), i);
+    //         i += 1;
+    //     }
+    //     assert_eq!(i, 999999);
+    // }
 
-    #[test]
-    fn test_values() {
-        let mut map = BurstTrieMap::new();
+    // #[test]
+    // fn test_values() {
+    //     let mut map = BurstTrieMap::new();
 
-        for i in (100000..999999) {
-            map.insert(i.to_string(), i);
-        }
+    //     for i in (100000..999999) {
+    //         map.insert(i.to_string(), i);
+    //     }
 
-        let mut i = 100000usize;
-        for value in map.values() {
-            assert_eq!(*value, i);
-            i += 1;
-        }
-        assert_eq!(i, 999999);
-    }
+    //     let mut i = 100000usize;
+    //     for value in map.values() {
+    //         assert_eq!(*value, i);
+    //         i += 1;
+    //     }
+    //     assert_eq!(i, 999999);
+    // }
 
     #[test]
     fn test_correctness() {
@@ -1397,8 +1424,8 @@ mod bench {
     map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
     map_insert_seq_bench!(burst_insert_seq_100000, 20, 100, 100000, BurstTrieMap);
 
-    map_iter_bench!(burst_iter_10000, 20, 100, 10000, BurstTrieMap);
-    map_range_bench!(burst_range_10000, 20, 100, 10000, BurstTrieMap);
+    // map_iter_bench!(burst_iter_10000, 20, 100, 10000, BurstTrieMap);
+    // map_range_bench!(burst_range_10000, 20, 100, 10000, BurstTrieMap);
 
 
 
@@ -1426,6 +1453,6 @@ mod bench {
     map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
 
 
-    map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
-    map_range_bench!(btree_range_10000, 20, 100, 10000, BTreeMap);
+    // map_iter_bench!(btree_iter_10000, 20, 100, 10000, BTreeMap);
+    // map_range_bench!(btree_range_10000, 20, 100, 10000, BTreeMap);
 }
