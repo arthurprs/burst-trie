@@ -2,32 +2,33 @@
 
 [![Build Status](https://travis-ci.org/arthurprs/burst-trie.svg)](https://travis-ci.org/arthurprs/burst-trie)
 
-Implements an ordered map as an Adaptive Burst Trie. It's a very fast Trie variant specialized for byte ordered types (like a string).
+Implements an ordered map as an Adaptive Burst Trie. It's a very fast Trie variant specialized for byte ordered types (like strings).
 
 ***This is a work in progress***
 
 This structure achieves better performance than a BTree implementations for common operations while
 still allowing range scanning and ordered iteration.
 
-Performance is usually better than the std lib BTreeMap for random keys (worst case) but it pulls ahead further if keys have common prefixes (See [benchmarks](#benchmarks)).
-Memory wise it consumes 90~140% memory of the equivalent BTreeMap.
+Performance is always better than the std lib BTreeMap and it pulls ahead further if keys have common prefixes (See [benchmarks](#benchmarks)). In some specific cases it's even comparable to a HashMap while keeping the extra functionality of an ordered collections.
+Memory wise it consumes 80~100% as much memory as the equivalent BTreeMap/HashMap.
 
 *The Burst Trie was original described by S. Heinz. You can find the original paper in the internet by it's title
 "Burst Tries: A Fast, Efficient Data Structure for String Keys"*
 
-### Limitations
+#### Limitations
 
-It's specialized for byte ordered keys, like String, &str and &[u8].
+It's specialized for byte ordered keys, like String, &str and &[u8], adapters for other types could be implemented though.
 
 # TODO
 
-* Entry API
-* Compile on Rust Stable
-* Improve Iterators (reverse versions)
-* Improve Range search (reverse and mut versions)
-* Set implementation
-* Deduplicate some code with macros
-* Performance
+- [x] Performance
+- [x] Reasonable Memory efficient (could be improved further)
+- [ ] Entry API
+- [ ] Compile on Rust Stable
+- [ ] Iterators
+- [ ] Range search
+- [ ] Prefix search
+- [ ] Set implementation
 
 # Benchmarks
 
