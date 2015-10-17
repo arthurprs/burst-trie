@@ -21,14 +21,16 @@ It's specialized for byte ordered keys, like String, &str and &[u8], adapters fo
 
 # TODO
 
+- [x] BTreeMap API
 - [x] Performance
-- [x] Reasonable Memory efficient (could be improved further)
+- [x] Reasonable Memory efficient (could be improved further with other node types)
 - [ ] Entry API
 - [ ] Compile on Rust Stable
 - [ ] Iterators
 - [ ] Range search
 - [ ] Prefix search
 - [ ] Set implementation
+- [ ] Path compression (Probably not effective in the Burst variant)
 
 # Benchmarks
 
