@@ -6,7 +6,7 @@ authors = ["arthurprs <arthurprs@gmail.com>"]
 
 [dependencies]
 rand = "0.3.7"
-crossbeam = "=0.2.5"
+crossbeam = "*"
 spin = "0.3.5"
 arrayvec = "0.3.16"
 lazy_static = "*"
@@ -27,3 +27,5 @@ lto = false
 debug-assertions = false
 codegen-units = 1
 
+[profile.bench]
+debug = true

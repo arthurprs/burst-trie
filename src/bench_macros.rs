@@ -4,6 +4,7 @@ pub static BENCH_SEED: &'static[usize] = &[0, 1, 1, 2, 3, 5, 8, 13, 21, 34];
 macro_rules! map_get_rnd_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
 
@@ -36,6 +37,7 @@ macro_rules! map_get_rnd_bench {
 macro_rules! map_insert_rnd_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
 
@@ -64,6 +66,7 @@ macro_rules! map_insert_rnd_bench {
 macro_rules! map_get_seq_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
 
@@ -99,6 +102,7 @@ macro_rules! map_get_seq_bench {
 macro_rules! map_insert_seq_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
 
@@ -130,6 +134,7 @@ macro_rules! map_insert_seq_bench {
 macro_rules! map_iter_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
 
@@ -159,6 +164,7 @@ macro_rules! map_iter_bench {
 macro_rules! map_range_bench {
     ($name: ident, $min_len: expr, $max_len: expr, $map_len: expr, $map_type: ident, $key_prefix: expr) => (
         #[bench]
+        #[allow(unused_mut)]
         fn $name(b: &mut test::Bencher) {
             use rand::{Rng, StdRng, SeedableRng};
             use std::collections::Bound;
