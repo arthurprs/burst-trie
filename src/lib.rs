@@ -1,11 +1,10 @@
 #![feature(box_patterns)]
 #![feature(asm)]
 #![cfg_attr(test, feature(test))]
-
-#![feature(alloc_system)]
-
-extern crate alloc_system;
-
+//
+// #![feature(alloc_system)]
+//
+// extern crate alloc_system;
 
 extern crate crossbeam;
 extern crate spin;
@@ -22,8 +21,6 @@ extern crate rand;
 #[cfg(test)]
 #[macro_use]
 mod bench_macros;
-
-// mod permutation;
 
 mod map;
 pub use map::*;

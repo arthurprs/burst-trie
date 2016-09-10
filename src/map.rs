@@ -11,7 +11,6 @@
 /// "Burst Tries: A Fast, Efficient Data Structure for String Keys"
 
 use std::{ptr, mem, marker};
-use std::marker::PhantomData;
 use std::sync::atomic::{self, AtomicUsize};
 use std::cmp::{self, Ordering};
 // use std::ops::{Index, IndexMut};
@@ -19,7 +18,6 @@ use std::cmp::{self, Ordering};
 use crossbeam::mem::epoch::{self, Atomic, Owned, Shared};
 use spin;
 use arrayvec::ArrayVec;
-// use permutation;
 
 const ALPHABET_SIZE: usize = 256;
 const CONTAINER_SIZE: usize = 16;
@@ -44,8 +42,8 @@ enum BurstTrieNodeType {
 pub struct Wrapper<'a, K: 'a, V: 'a> {
     key: *const K,
     value: *const V,
+    _lock: Option<spin::RwLockReadGuard<'a, ()>>,
     _guard: epoch::Guard,
-    _phantom: PhantomData<&'a (K, V)>,
 }
 
 impl<'a, K, V> Wrapper<'a, K, V> {
@@ -80,7 +78,7 @@ struct AccessNode<K, V>
     where K: AsRef<[u8]>
 {
     _type: BurstTrieNodeType,
-    lock: spin::Mutex<()>,
+    rw_lock: spin::RwLock<()>,
     nodes: [Atomic<BurstTrieNode<K, V>>; ALPHABET_SIZE],
     terminator: Option<(K, V)>,
 }
@@ -143,20 +141,25 @@ impl<K, V> BurstTrieMap<K, V>
     pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>>
         where Q: AsRef<[u8]>
     {
-        // FIXME: this is terribly broken
         let guard = epoch::pin();
-        let result = BurstTrieNode::get(self.root.load(atomic::Ordering::Acquire, &guard),
+        let result = {
+            let result = BurstTrieNode::get(self.root.load(atomic::Ordering::Acquire, &guard),
                                         key,
                                         0,
                                         &guard);
-        result.map(|r| {
-            Wrapper {
-                key: r.0,
-                value: r.1,
-                _guard: guard,
-                _phantom: PhantomData,
-            }
-        })
+            result.map(|r| {
+                Wrapper {
+                    key: r.0,
+                    value: r.1,
+                    _lock: Some(unsafe { mem::transmute(r.2) }),
+                    _guard: unsafe { mem::transmute_copy(&guard) },
+                }
+            })
+        };
+
+        mem::forget(guard);
+
+        result
     }
 
     pub fn find<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>>
@@ -272,6 +275,14 @@ impl<K, V> Drop for BurstTrieMap<K, V>
         self.clear()
     }
 }
+
+impl<'a, K, V> Drop for Wrapper<'a, K, V> {
+    fn drop(&mut self) {
+        // make sure lock is dropped before guard
+        self._lock.take();
+    }
+}
+
 impl<K, V> Drop for ContainerNode<K, V>
     where K: AsRef<[u8]>
 {
@@ -280,6 +291,7 @@ impl<K, V> Drop for ContainerNode<K, V>
         register_free(self);
     }
 }
+
 impl<K, V> Drop for AccessNode<K, V>
     where K: AsRef<[u8]>
 {
@@ -323,11 +335,11 @@ impl<K, V> BurstTrieNode<K, V>
     }
 
     #[inline]
-    fn get<Q: ?Sized>(n: Option<Shared<Self>>,
+    fn get<'a, Q: ?Sized>(n: Option<Shared<'a, Self>>,
                       key: &Q,
                       depth: usize,
-                      guard: &epoch::Guard)
-                      -> Option<(*const K, *const V)>
+                      guard: &'a epoch::Guard)
+                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         match Self::_type(n) {
@@ -607,11 +619,11 @@ impl<K, V> ContainerNode<K, V>
     }
 
     #[inline(never)]
-    fn get<Q: ?Sized>(&self,
+    fn get<'a, Q: ?Sized>(&'a self,
                       key: &Q,
                       depth: usize,
                       _: &epoch::Guard)
-                      -> Option<(*const K, *const V)>
+                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         let _r_lock = self.rw_lock.read();
@@ -621,7 +633,7 @@ impl<K, V> ContainerNode<K, V>
         if let Ok(pos) = res_bs {
             Some(unsafe {
                 let r = self.items.get_unchecked(pos);
-                (&r.0 as *const _, &r.1 as *const _)
+                (&r.0 as *const _, &r.1 as *const _, _r_lock)
             })
         } else {
             None
@@ -635,7 +647,7 @@ impl<K, V> AccessNode<K, V>
     fn new() -> Owned<Self> {
         let a = Owned::new(AccessNode {
             _type: BurstTrieNodeType::Access,
-            lock: spin::Mutex::new(()),
+            rw_lock: spin::RwLock::new(()),
             nodes: unsafe { mem::zeroed() },
             terminator: None,
         });
@@ -668,7 +680,7 @@ impl<K, V> AccessNode<K, V>
                                   &self.nodes[idx],
                                   guard)
         } else {
-            let _lock = self.lock.lock();
+            let _lock = self.rw_lock.write();
             mem::replace(&mut self.terminator, Some((key, value)))
         }
     }
@@ -684,16 +696,16 @@ impl<K, V> AccessNode<K, V>
                                   &self.nodes[idx],
                                   guard)
         } else {
-            let _lock = self.lock.lock();
+            let _lock = self.rw_lock.write();
             self.terminator.take()
         }
     }
 
-    fn get<Q: ?Sized>(&self,
+    fn get<'a, Q: ?Sized>(&'a self,
                       key: &Q,
                       depth: usize,
-                      guard: &epoch::Guard)
-                      -> Option<(*const K, *const V)>
+                      guard: &'a epoch::Guard)
+                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         if depth < key.as_ref().len() {
@@ -703,8 +715,8 @@ impl<K, V> AccessNode<K, V>
                                depth + 1,
                                guard)
         } else {
-            let _lock = self.lock.lock();
-            self.terminator.as_ref().map(|r| (&r.0 as *const _, &r.1 as *const _))
+            let _lock = self.rw_lock.read();
+            self.terminator.as_ref().map(|r| (&r.0 as *const _, &r.1 as *const _, _lock))
         }
     }
 }
