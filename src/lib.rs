@@ -1,7 +1,11 @@
 #![feature(box_patterns)]
-#![feature(unsafe_no_drop_flag)]
 #![feature(asm)]
-#![feature(test)]
+#![cfg_attr(test, feature(test))]
+
+#![feature(alloc_system)]
+
+extern crate alloc_system;
+
 
 extern crate crossbeam;
 extern crate spin;

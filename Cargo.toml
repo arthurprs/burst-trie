@@ -7,8 +7,8 @@ authors = ["arthurprs <arthurprs@gmail.com>"]
 [dependencies]
 rand = "0.3.7"
 crossbeam = "*"
-spin = "0.3.5"
-arrayvec = "0.3.16"
+spin = "*"
+arrayvec = "*"
 lazy_static = "*"
 
 [profile.dev]

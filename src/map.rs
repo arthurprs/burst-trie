@@ -10,15 +10,11 @@
 /// You can find the original paper in the internet by it's title
 /// "Burst Tries: A Fast, Efficient Data Structure for String Keys"
 
-use std::ptr;
-use std::mem;
+use std::{ptr, mem, marker};
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::atomic::{self, AtomicUsize};
 use std::cmp::{self, Ordering};
-use std::default::Default;
 // use std::ops::{Index, IndexMut};
-use std::marker;
 
 use crossbeam::mem::epoch::{self, Atomic, Owned, Shared};
 use spin;
@@ -31,7 +27,9 @@ const CONTAINER_SIZE: usize = 16;
 /// An BurstTrie implementation of an ordered map. Specialized for byte ordered types.
 ///
 /// See module level docs for details.
-pub struct BurstTrieMap<K, V> where K: AsRef<[u8]> {
+pub struct BurstTrieMap<K, V>
+    where K: AsRef<[u8]>
+{
     root: Atomic<BurstTrieNode<K, V>>,
     len: AtomicUsize,
 }
@@ -60,26 +58,36 @@ impl<'a, K, V> Wrapper<'a, K, V> {
     }
 }
 
-struct BurstTrieNode<K, V> where K: AsRef<[u8]> {
+#[repr(C)]
+struct BurstTrieNode<K, V>
+    where K: AsRef<[u8]>
+{
     _type: BurstTrieNodeType,
     marker: marker::PhantomData<(K, V)>,
 }
 
-struct ContainerNode<K, V> where K: AsRef<[u8]> {
+#[repr(C)]
+struct ContainerNode<K, V>
+    where K: AsRef<[u8]>
+{
     _type: BurstTrieNodeType,
     rw_lock: spin::RwLock<()>,
-    items: ArrayVec<[Arc<(K, V)>; CONTAINER_SIZE]>,
+    items: ArrayVec<[(K, V); CONTAINER_SIZE]>,
 }
 
-struct AccessNode<K, V> where K: AsRef<[u8]> {
+#[repr(C)]
+struct AccessNode<K, V>
+    where K: AsRef<[u8]>
+{
     _type: BurstTrieNodeType,
     lock: spin::Mutex<()>,
     nodes: [Atomic<BurstTrieNode<K, V>>; ALPHABET_SIZE],
-    terminator: Option<Arc<(K, V)>>,
+    terminator: Option<(K, V)>,
 }
 
-impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
-    
+impl<K, V> BurstTrieMap<K, V>
+    where K: AsRef<[u8]>
+{
     /// Returns a new empty BurstTrieMap
     pub fn new() -> BurstTrieMap<K, V> {
         BurstTrieMap {
@@ -103,11 +111,15 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
     /// assert_eq!(a.insert("a", 1), Some(0));
     /// assert_eq!(a.len(), 1);
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Option<Arc<(K, V)>> {
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let guard = epoch::pin();
-        let opt_old_value = BurstTrieNode::insert(
-            self.root.load(atomic::Ordering::Acquire, &guard),
-            key, value, 0, &self.root, &guard);
+        let opt_old_value = BurstTrieNode::insert(self.root
+                                                      .load(atomic::Ordering::Acquire, &guard),
+                                                  key,
+                                                  value,
+                                                  0,
+                                                  &self.root,
+                                                  &guard);
         if opt_old_value.is_none() {
             self.len.fetch_add(1, atomic::Ordering::Relaxed);
         }
@@ -128,20 +140,28 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
     /// assert_eq!(a.get("a"), Some(&0));
     /// assert_eq!(a.get("b"), None);
     /// ```
-    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>> where Q: AsRef<[u8]> {
+    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>>
+        where Q: AsRef<[u8]>
+    {
+        // FIXME: this is terribly broken
         let guard = epoch::pin();
-        let result = BurstTrieNode::get(
-            self.root.load(atomic::Ordering::Acquire, &guard),
-            key, 0, &guard);
-        result.map(|r| Wrapper {
-            key: r.0,
-            value: r.1,
-            _guard: guard,
-            _phantom: PhantomData,
+        let result = BurstTrieNode::get(self.root.load(atomic::Ordering::Acquire, &guard),
+                                        key,
+                                        0,
+                                        &guard);
+        result.map(|r| {
+            Wrapper {
+                key: r.0,
+                value: r.1,
+                _guard: guard,
+                _phantom: PhantomData,
+            }
         })
     }
 
-    pub fn find<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>> where Q: AsRef<[u8]> {
+    pub fn find<Q: ?Sized>(&self, key: &Q) -> Option<Wrapper<K, V>>
+        where Q: AsRef<[u8]>
+    {
         self.get(key)
     }
 
@@ -157,7 +177,9 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
     /// assert_eq!(a.contains_key("a"), true);
     /// assert_eq!(a.contains_key("b"), false);
     /// ```
-    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool where Q: AsRef<[u8]> {
+    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
+        where Q: AsRef<[u8]>
+    {
         self.get(key).is_some()
     }
 
@@ -176,11 +198,16 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
     /// assert_eq!(a.remove("a"), Some(0));
     /// assert_eq!(a.len(), 0);
     /// ```
-    pub fn remove<Q: ?Sized>(&self, key: &Q) -> Option<Arc<(K, V)>> where Q: AsRef<[u8]> {
+    pub fn remove<Q: ?Sized>(&self, key: &Q) -> Option<(K, V)>
+        where Q: AsRef<[u8]>
+    {
         let guard = epoch::pin();
-        let opt_old_value = BurstTrieNode::remove(
-            self.root.load(atomic::Ordering::Acquire, &guard),
-            key, 0, &self.root, &guard);
+        let opt_old_value = BurstTrieNode::remove(self.root
+                                                      .load(atomic::Ordering::Acquire, &guard),
+                                                  key,
+                                                  0,
+                                                  &self.root,
+                                                  &guard);
         if opt_old_value.is_some() {
             self.len.fetch_sub(1, atomic::Ordering::Relaxed);
         }
@@ -224,28 +251,49 @@ impl<K, V> BurstTrieMap<K, V> where K: AsRef<[u8]> {
     /// ```
     pub fn clear(&self) {
         let guard = epoch::pin();
-        let drop_count = BurstTrieNode::drop(
-            self.root.swap(None, atomic::Ordering::Acquire, &guard), &guard);
+        let drop_count = BurstTrieNode::drop(self.root
+                                                 .swap(None, atomic::Ordering::Acquire, &guard),
+                                             &guard);
         self.len.fetch_sub(drop_count, atomic::Ordering::Relaxed);
     }
 
     pub fn print_structure(&self) {
         let guard = epoch::pin();
-        BurstTrieNode::print_structure(
-            self.root.load(atomic::Ordering::Acquire, &guard), 0, &guard);
+        BurstTrieNode::print_structure(self.root.load(atomic::Ordering::Acquire, &guard),
+                                       0,
+                                       &guard);
     }
-
 }
 
-impl<K, V> Drop for BurstTrieMap<K, V> where K: AsRef<[u8]> {
+impl<K, V> Drop for BurstTrieMap<K, V>
+    where K: AsRef<[u8]>
+{
     fn drop(&mut self) {
         self.clear()
+    }
+}
+impl<K, V> Drop for ContainerNode<K, V>
+    where K: AsRef<[u8]>
+{
+    fn drop(&mut self) {
+        println!("dropping ContainerNode {:?}", self as *const _ as usize);
+        register_free(self);
+    }
+}
+impl<K, V> Drop for AccessNode<K, V>
+    where K: AsRef<[u8]>
+{
+    fn drop(&mut self) {
+        println!("dropping AccessNode {:?}", self as *const _ as usize);
+        register_free(self);
     }
 }
 
 type BurstTrieNodeRef<'a, K, V> = &'a Atomic<BurstTrieNode<K, V>>;
 
-impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
+impl<K, V> BurstTrieNode<K, V>
+    where K: AsRef<[u8]>
+{
     #[inline]
     fn _type(n: Option<Shared<Self>>) -> BurstTrieNodeType {
         if n.is_none() {
@@ -260,7 +308,8 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
     #[allow(mutable_transmutes)]
     fn as_container(&self) -> &mut ContainerNode<K, V> {
         debug_assert!(self._type == BurstTrieNodeType::Container,
-            "expected Container, got {:?}", self._type);
+                      "expected Container, got {:?}",
+                      self._type);
         unsafe { mem::transmute(self) }
     }
 
@@ -268,38 +317,41 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
     #[allow(mutable_transmutes)]
     fn as_access(&self) -> &mut AccessNode<K, V> {
         debug_assert!(self._type == BurstTrieNodeType::Access,
-            "expected Access, got {:?}", self._type);
+                      "expected Access, got {:?}",
+                      self._type);
         unsafe { mem::transmute(self) }
     }
 
     #[inline]
-    fn get<Q: ?Sized>(n: Option<Shared<Self>>, key: &Q, depth: usize, guard: &epoch::Guard) -> Option<(*const K, *const V)>
-    where Q: AsRef<[u8]> {
+    fn get<Q: ?Sized>(n: Option<Shared<Self>>,
+                      key: &Q,
+                      depth: usize,
+                      guard: &epoch::Guard)
+                      -> Option<(*const K, *const V)>
+        where Q: AsRef<[u8]>
+    {
         match Self::_type(n) {
-            BurstTrieNodeType::Access => {
-                n.unwrap().as_access().get(key, depth, guard)
-            },
-            BurstTrieNodeType::Container => {
-                n.unwrap().as_container().get(key, depth, guard)
-            },
+            BurstTrieNodeType::Access => n.unwrap().as_access().get(key, depth, guard),
+            BurstTrieNodeType::Container => n.unwrap().as_container().get(key, depth, guard),
             BurstTrieNodeType::Empty => None,
         }
     }
 
     /// Insert function guaranteed to be sequential insert and single threaded
     #[inline]
-    fn insert_pair(n: Option<Shared<Self>>, pair: Arc<(K, V)>, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &epoch::Guard) {
+    fn insert_pair(n: Option<Shared<Self>>,
+                   pair: (K, V),
+                   depth: usize,
+                   node_ref: BurstTrieNodeRef<K, V>,
+                   guard: &epoch::Guard) {
         match Self::_type(n) {
-            BurstTrieNodeType::Access => {
-                n.unwrap().as_access().insert_pair(pair, depth, guard)
-            },
+            BurstTrieNodeType::Access => n.unwrap().as_access().insert_pair(pair, depth, guard),
             BurstTrieNodeType::Container => {
                 n.unwrap().as_container().insert_pair(pair, depth, node_ref, guard)
-            },
+            }
             BurstTrieNodeType::Empty => unsafe {
                 let mut container = ContainerNode::new();
                 container.insert_pair(pair, depth, node_ref, guard);
-                register_allocation(mem::transmute_copy(&container));
                 node_ref.store(mem::transmute(container), atomic::Ordering::Release);
             },
         }
@@ -307,22 +359,29 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
 
     // Good old insertion function
     #[inline]
-    fn insert<'a>(mut n: Option<Shared<'a, Self>>, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &'a epoch::Guard) -> Option<Arc<(K, V)>> {
+    fn insert<'a>(mut n: Option<Shared<'a, Self>>,
+                  key: K,
+                  value: V,
+                  depth: usize,
+                  node_ref: BurstTrieNodeRef<K, V>,
+                  guard: &'a epoch::Guard)
+                  -> Option<(K, V)> {
         loop {
             match Self::_type(n) {
                 BurstTrieNodeType::Access => {
                     return n.unwrap().as_access().insert(key, value, depth, guard)
-                },
+                }
                 BurstTrieNodeType::Container => {
                     if let Some(_w_lock) = n.unwrap().as_container().rw_lock.try_write() {
-                        return n.unwrap().as_container().insert(key, value, depth, node_ref, guard)
+                        return n.unwrap().as_container().insert(key, value, depth, node_ref, guard);
                     }
-                },
+                    panic!();
+                }
                 BurstTrieNodeType::Empty => unsafe {
                     let container: Owned<ContainerNode<K, V>> = ContainerNode::new();
-                    register_allocation(mem::transmute_copy(&container));
-                    if let Err(c) = node_ref.cas(n, mem::transmute(container), atomic::Ordering::AcqRel) {
-                        register_free(mem::transmute(c));
+                    if let Err(_c) =
+                           node_ref.cas(n, mem::transmute(container), atomic::Ordering::AcqRel) {
+                        panic!();
                     }
                 },
             }
@@ -331,18 +390,24 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
     }
 
     #[inline]
-    fn remove<'a, Q: ?Sized>(mut n: Option<Shared<'a, Self>>, key: &Q, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &'a epoch::Guard) -> Option<Arc<(K, V)>>
-    where Q: AsRef<[u8]> {
+    fn remove<'a, Q: ?Sized>(mut n: Option<Shared<'a, Self>>,
+                             key: &Q,
+                             depth: usize,
+                             node_ref: BurstTrieNodeRef<K, V>,
+                             guard: &'a epoch::Guard)
+                             -> Option<(K, V)>
+        where Q: AsRef<[u8]>
+    {
         loop {
             match Self::_type(n) {
                 BurstTrieNodeType::Access => {
                     return n.unwrap().as_access().remove(key, depth, guard)
-                },
+                }
                 BurstTrieNodeType::Container => {
                     if let Some(_w_lock) = n.unwrap().as_container().rw_lock.try_write() {
-                        return n.unwrap().as_container().remove(key, depth, guard)
+                        return n.unwrap().as_container().remove(key, depth, guard);
                     }
-                },
+                }
                 BurstTrieNodeType::Empty => return None,
             }
             n = node_ref.load(atomic::Ordering::Acquire, guard);
@@ -351,27 +416,26 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
 
     #[inline(never)]
     fn drop(n: Option<Shared<Self>>, guard: &epoch::Guard) -> usize {
-        if let Some(n) = n {
-            register_free(n.as_raw() as usize);
-        }
         unsafe {
             match BurstTrieNode::_type(n) {
                 BurstTrieNodeType::Access => {
                     let mut drop_count = n.unwrap().as_access().terminator.iter().count();
                     for child in n.unwrap().as_access().nodes.iter() {
-                        drop_count += BurstTrieNode::drop(child.load(atomic::Ordering::Acquire, &guard), &guard);
+                        drop_count += BurstTrieNode::drop(child.load(atomic::Ordering::Acquire,
+                                                                     &guard),
+                                                          &guard);
                     }
-                    // drop(ptr::read(n.unwrap().as_access()));
-                    // guard.unlinked::<Shared<AccessNode<K, V>>>(mem::transmute(n.unwrap()));
+                    ptr::drop_in_place(n.unwrap().as_access());
+                    guard.unlinked::<Shared<AccessNode<K, V>>>(mem::transmute(n));
                     drop_count
-                },
+                }
                 BurstTrieNodeType::Container => {
                     let drop_count = n.unwrap().as_container().items.len();
-                    // drop(ptr::read(n.unwrap().as_container()));
-                    // guard.unlinked::<Shared<ContainerNode<K, V>>>(mem::transmute(n.unwrap()));
+                    ptr::drop_in_place(n.unwrap().as_container());
+                    guard.unlinked::<Shared<ContainerNode<K, V>>>(mem::transmute(n));
                     drop_count
-                },
-                BurstTrieNodeType::Empty => 0
+                }
+                BurstTrieNodeType::Empty => 0,
             }
         }
     }
@@ -382,26 +446,28 @@ impl<K, V> BurstTrieNode<K, V> where K: AsRef<[u8]>  {
             BurstTrieNodeType::Access => {
                 for (c, node) in n.unwrap().as_access().nodes.iter().enumerate() {
                     println!("{}Access({:?})({})",
-                        (0..depth).map(|_| ' ').collect::<String>(),
-                        n.unwrap().as_raw(),
-                        c as u8 as char);
-                    Self::print_structure(node.load(atomic::Ordering::Acquire, guard), depth + 1, guard);
+                             (0..depth).map(|_| ' ').collect::<String>(),
+                             n.unwrap().as_raw(),
+                             c as u8 as char);
+                    Self::print_structure(node.load(atomic::Ordering::Acquire, guard),
+                                          depth + 1,
+                                          guard);
                 }
-            },
+            }
             BurstTrieNodeType::Container => {
                 println!("{}Container({:?})(LEN {})",
-                    (0..depth).map(|_| ' ').collect::<String>(),
-                    n.unwrap().as_raw(),
-                    n.unwrap().as_container().items.len());
-            },
-            BurstTrieNodeType::Empty => ()
+                         (0..depth).map(|_| ' ').collect::<String>(),
+                         n.unwrap().as_raw(),
+                         n.unwrap().as_container().items.len());
+            }
+            BurstTrieNodeType::Empty => (),
         }
     }
 }
 
 // The expansion of this is quite a bit of code, so mark callers as non inlineable
 #[inline]
-fn opt_binary_search_by<K, F>(slice: &[Arc<K>], mut f: F) -> Result<usize, usize>
+fn opt_binary_search_by<K, F>(slice: &[K], mut f: F) -> Result<usize, usize>
     where F: FnMut(&K) -> Ordering
 {
     let mut base: usize = 0;
@@ -415,7 +481,7 @@ fn opt_binary_search_by<K, F>(slice: &[Arc<K>], mut f: F) -> Result<usize, usize
                 base = ix + 1;
                 lim -= 1;
             }
-            Ordering::Greater => ()
+            Ordering::Greater => (),
         }
         lim >>= 1;
     }
@@ -429,13 +495,13 @@ fn opt_binary_search_by<K, F>(slice: &[Arc<K>], mut f: F) -> Result<usize, usize
 fn cmp_slice_offset(a: &[u8], b: &[u8], offset: usize) -> Ordering {
     // NOTE: In theory n should be libc::size_t and not usize, but libc is not available here
     #[allow(improper_ctypes)]
-    extern { fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32; }
+    extern "C" {
+        fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
+    }
     let cmp = unsafe {
-        memcmp(
-            a.as_ptr().offset(offset as isize),
-            b.as_ptr().offset(offset as isize),
-            cmp::min(a.len(), b.len()) - offset
-        )
+        memcmp(a.as_ptr().offset(offset as isize),
+               b.as_ptr().offset(offset as isize),
+               cmp::min(a.len(), b.len()) - offset)
     };
 
     if cmp == 0 {
@@ -447,41 +513,60 @@ fn cmp_slice_offset(a: &[u8], b: &[u8], offset: usize) -> Ordering {
     }
 }
 
-impl<K, V> ContainerNode<K, V> where K: AsRef<[u8]> {
+impl<K, V> ContainerNode<K, V>
+    where K: AsRef<[u8]>
+{
     fn new() -> Owned<Self> {
-        Owned::new(ContainerNode {
+        let c = Owned::new(ContainerNode {
             _type: BurstTrieNodeType::Container,
             rw_lock: spin::RwLock::new(()),
             items: ArrayVec::new(),
-        })
+        });
+        register_allocation(&*c);
+        c
     }
 
     #[inline(never)]
-    fn burst<'a>(&self, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &'a epoch::Guard) -> Option<Shared<'a, BurstTrieNode<K, V>>> {
+    fn burst<'a>(&mut self,
+                 depth: usize,
+                 node_ref: BurstTrieNodeRef<K, V>,
+                 guard: &'a epoch::Guard)
+                 -> Option<Shared<'a, BurstTrieNode<K, V>>> {
         let mut access: Owned<AccessNode<K, V>> = AccessNode::new();
-        for pair in self.items.iter() {
-            access.insert_pair(unsafe { mem::transmute_copy(pair) }, depth, guard);
+        for pair in self.items.drain(..) {
+            access.insert_pair(pair, depth, guard);
         }
         unsafe {
-            register_allocation(mem::transmute_copy(&access));
-            // guard.unlinked::<Shared<Self>>(mem::transmute(self));
-            Some(node_ref.store_and_ref(
-                mem::transmute(access), atomic::Ordering::Release, guard))
+            ptr::drop_in_place(self);
+            guard.unlinked::<Shared<Self>>(mem::transmute(self));
+            Some(node_ref.store_and_ref(mem::transmute(access), atomic::Ordering::Release, guard))
         }
     }
 
-    fn insert_pair(&mut self, pair: Arc<(K, V)>, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &epoch::Guard) {
+    fn insert_pair(&mut self,
+                   pair: (K, V),
+                   depth: usize,
+                   node_ref: BurstTrieNodeRef<K, V>,
+                   guard: &epoch::Guard) {
         if self.items.len() >= CONTAINER_SIZE {
-            BurstTrieNode::insert_pair(
-                self.burst(depth, node_ref, guard),
-                pair, depth, node_ref, guard);
+            BurstTrieNode::insert_pair(self.burst(depth, node_ref, guard),
+                                       pair,
+                                       depth,
+                                       node_ref,
+                                       guard);
         } else {
             self.items.push(pair);
         }
     }
 
     #[inline(never)]
-    fn insert(&mut self, key: K, value: V, depth: usize, node_ref: BurstTrieNodeRef<K, V>, guard: &epoch::Guard) -> Option<Arc<(K, V)>> {
+    fn insert(&mut self,
+              key: K,
+              value: V,
+              depth: usize,
+              node_ref: BurstTrieNodeRef<K, V>,
+              guard: &epoch::Guard)
+              -> Option<(K, V)> {
         let insert_pos = {
             let res_bs = opt_binary_search_by(&self.items, |other| {
                 cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
@@ -489,35 +574,46 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<[u8]> {
             match res_bs {
                 Ok(pos) => {
                     let old_value = unsafe { self.items.get_unchecked_mut(pos) };
-                    return Some(mem::replace(old_value, Arc::new((key, value))));
-                },
-                Err(pos) => pos
+                    return Some(mem::replace(old_value, (key, value)));
+                }
+                Err(pos) => pos,
             }
         };
 
         if self.items.len() >= CONTAINER_SIZE {
-            BurstTrieNode::insert(
-                self.burst(depth, node_ref, guard),
-                key, value, depth, node_ref, guard)
+            BurstTrieNode::insert(self.burst(depth, node_ref, guard),
+                                  key,
+                                  value,
+                                  depth,
+                                  node_ref,
+                                  guard)
         } else {
-            self.items.insert(insert_pos, Arc::new((key, value)));
+            self.items.insert(insert_pos, (key, value));
             None
         }
     }
 
     #[inline(never)]
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, _: &epoch::Guard) -> Option<Arc<(K, V)>> where Q: AsRef<[u8]> {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, _: &epoch::Guard) -> Option<(K, V)>
+        where Q: AsRef<[u8]>
+    {
         let res_bs = opt_binary_search_by(&self.items, |other| {
             cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
         });
         match res_bs {
             Ok(pos) => self.items.remove(pos),
-            Err(_) => None
+            Err(_) => None,
         }
     }
 
     #[inline(never)]
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize, _: &epoch::Guard) -> Option<(*const K, *const V)> where Q: AsRef<[u8]> {
+    fn get<Q: ?Sized>(&self,
+                      key: &Q,
+                      depth: usize,
+                      _: &epoch::Guard)
+                      -> Option<(*const K, *const V)>
+        where Q: AsRef<[u8]>
+    {
         let _r_lock = self.rw_lock.read();
         let res_bs = opt_binary_search_by(&self.items, |other| {
             cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
@@ -533,59 +629,79 @@ impl<K, V> ContainerNode<K, V> where K: AsRef<[u8]> {
     }
 }
 
-impl<K, V> AccessNode<K, V> where K: AsRef<[u8]> {
+impl<K, V> AccessNode<K, V>
+    where K: AsRef<[u8]>
+{
     fn new() -> Owned<Self> {
-        Owned::new(AccessNode {
+        let a = Owned::new(AccessNode {
             _type: BurstTrieNodeType::Access,
             lock: spin::Mutex::new(()),
             nodes: unsafe { mem::zeroed() },
-            terminator: None
-        })
+            terminator: None,
+        });
+        register_allocation(&*a);
+        a
     }
 
-    fn insert_pair(&mut self, pair: Arc<(K, V)>, depth: usize, guard: &epoch::Guard) {
+    fn insert_pair(&mut self, pair: (K, V), depth: usize, guard: &epoch::Guard) {
         // depth is always <= key.len
         if depth < pair.0.as_ref().len() {
             let idx = pair.0.as_ref()[depth] as usize;
-            BurstTrieNode::insert_pair(
-                self.nodes[idx].load(atomic::Ordering::Acquire, guard),
-                pair, depth + 1, &self.nodes[idx], guard);
+            BurstTrieNode::insert_pair(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+                                       pair,
+                                       depth + 1,
+                                       &self.nodes[idx],
+                                       guard);
         } else {
             self.terminator = Some(pair);
         }
     }
 
-    fn insert(&mut self, key: K, value: V, depth: usize, guard: &epoch::Guard) -> Option<Arc<(K, V)>> {
+    fn insert(&mut self, key: K, value: V, depth: usize, guard: &epoch::Guard) -> Option<(K, V)> {
         // depth is always <= key.len
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::insert(
-                self.nodes[idx].load(atomic::Ordering::Acquire, guard),
-                key, value, depth + 1, &self.nodes[idx], guard)
+            BurstTrieNode::insert(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+                                  key,
+                                  value,
+                                  depth + 1,
+                                  &self.nodes[idx],
+                                  guard)
         } else {
             let _lock = self.lock.lock();
-            mem::replace(&mut self.terminator, Some(Arc::new((key, value))))
+            mem::replace(&mut self.terminator, Some((key, value)))
         }
     }
 
-    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, guard: &epoch::Guard) -> Option<Arc<(K, V)>> where Q: AsRef<[u8]> {
+    fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, guard: &epoch::Guard) -> Option<(K, V)>
+        where Q: AsRef<[u8]>
+    {
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::remove(
-                self.nodes[idx].load(atomic::Ordering::Acquire, guard),
-                key, depth + 1, &self.nodes[idx], guard)
+            BurstTrieNode::remove(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+                                  key,
+                                  depth + 1,
+                                  &self.nodes[idx],
+                                  guard)
         } else {
             let _lock = self.lock.lock();
             self.terminator.take()
         }
     }
 
-    fn get<Q: ?Sized>(&self, key: &Q, depth: usize, guard: &epoch::Guard) -> Option<(*const K, *const V)> where Q: AsRef<[u8]> {
+    fn get<Q: ?Sized>(&self,
+                      key: &Q,
+                      depth: usize,
+                      guard: &epoch::Guard)
+                      -> Option<(*const K, *const V)>
+        where Q: AsRef<[u8]>
+    {
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::get(
-                self.nodes[idx].load(atomic::Ordering::Acquire, guard),
-                key, depth + 1, guard)
+            BurstTrieNode::get(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+                               key,
+                               depth + 1,
+                               guard)
         } else {
             let _lock = self.lock.lock();
             self.terminator.as_ref().map(|r| (&r.0 as *const _, &r.1 as *const _))
@@ -593,37 +709,45 @@ impl<K, V> AccessNode<K, V> where K: AsRef<[u8]> {
     }
 }
 
-impl<K, V> Default for BurstTrieMap<K, V> where K: AsRef<[u8]> {
-    fn default() -> BurstTrieMap<K, V> { BurstTrieMap::new() }
+impl<K, V> Default for BurstTrieMap<K, V>
+    where K: AsRef<[u8]>
+{
+    fn default() -> BurstTrieMap<K, V> {
+        BurstTrieMap::new()
+    }
 }
 
 use std::sync::Mutex;
 use std::collections::HashSet;
 
 lazy_static! {
-    static ref CREATED: Mutex<HashSet<usize>> = Mutex::new(Default::default());
-    static ref CLEANED: Mutex<HashSet<usize>> = Mutex::new(Default::default());
+    static ref CREATED: Mutex<HashSet<(usize, usize)>> = Mutex::new(Default::default());
+    static ref CLEANED: Mutex<HashSet<(usize, usize)>> = Mutex::new(Default::default());
 }
 
-fn register_allocation(addr: usize) {
-    // assert!(CREATED.lock().unwrap().insert(addr));
+fn register_allocation<T>(addr: &T) {
+    let addr = addr as *const T as usize;
+    println!("{:?} ({}) allocated", addr, mem::size_of::<T>());
+    assert!(CREATED.lock().unwrap().insert((addr, mem::size_of::<T>())));
 }
 
-fn register_free(addr: usize) {
-    // let t = CREATED.lock().unwrap().remove(&addr);
-    // match t {
-    //     true => {
-    //         println!("{:?} deallocated, ok: {}, left: {}",
-    //             addr,
-    //             CLEANED.lock().unwrap().insert(addr),
-    //             CREATED.lock().unwrap().len());
-    //     },
-    //     false => {
-    //         println!("{:?} not CREATED, in CLEANED {}", addr,
-    //             CLEANED.lock().unwrap().contains(&addr));
-    //         assert!(false);
-    //     },
-    // }
+fn register_free<T>(addr: &T) {
+    let addr = addr as *const T as usize;
+    let t = CREATED.lock().unwrap().remove(&(addr, mem::size_of::<T>()));
+    match t {
+        true => {
+            println!("{:?} deallocated, ok: {}, left: {}",
+                     addr,
+                     CLEANED.lock().unwrap().insert((addr, mem::size_of::<T>())),
+                     CREATED.lock().unwrap().len());
+        }
+        false => {
+            println!("{:?} not CREATED, in CLEANED {}",
+                     addr,
+                     CLEANED.lock().unwrap().contains(&(addr, mem::size_of::<T>())));
+            assert!(false);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -654,7 +778,7 @@ mod tests {
 
     #[test]
     fn find_empty() {
-        let m: BurstTrieMap<String,i32> = BurstTrieMap::new();
+        let m: BurstTrieMap<String, i32> = BurstTrieMap::new();
         assert!(m.get("5").is_none());
     }
 
@@ -747,10 +871,30 @@ mod bench {
     map_insert_rnd_bench!(burst_insert_medium_10000, 20, 100, 10000, BurstTrieMap);
     map_insert_rnd_bench!(burst_insert_medium_100000, 20, 100, 100000, BurstTrieMap);
 
-    map_get_rnd_bench!(burst_get_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    map_get_rnd_bench!(burst_get_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
-    map_insert_rnd_bench!(burst_insert_prefix_medium_10000, 20, 100, 10000, BurstTrieMap, "https://www.");
-    map_insert_rnd_bench!(burst_insert_prefix_medium_100000, 20, 100, 100000, BurstTrieMap, "https://www.");
+    map_get_rnd_bench!(burst_get_prefix_medium_10000,
+                       20,
+                       100,
+                       10000,
+                       BurstTrieMap,
+                       "https://www.");
+    map_get_rnd_bench!(burst_get_prefix_medium_100000,
+                       20,
+                       100,
+                       100000,
+                       BurstTrieMap,
+                       "https://www.");
+    map_insert_rnd_bench!(burst_insert_prefix_medium_10000,
+                          20,
+                          100,
+                          10000,
+                          BurstTrieMap,
+                          "https://www.");
+    map_insert_rnd_bench!(burst_insert_prefix_medium_100000,
+                          20,
+                          100,
+                          100000,
+                          BurstTrieMap,
+                          "https://www.");
 
 
     map_get_seq_bench!(burst_get_seq_100000, 20, 100, 100000, BurstTrieMap);
@@ -775,10 +919,30 @@ mod bench {
     map_insert_rnd_bench!(btree_insert_medium_10000, 20, 100, 10000, BTreeMap);
     map_insert_rnd_bench!(btree_insert_medium_100000, 20, 100, 100000, BTreeMap);
 
-    map_get_rnd_bench!(btree_get_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    map_get_rnd_bench!(btree_get_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
-    map_insert_rnd_bench!(btree_insert_prefix_medium_10000, 20, 100, 10000, BTreeMap, "https://www.");
-    map_insert_rnd_bench!(btree_insert_prefix_medium_100000, 20, 100, 100000, BTreeMap, "https://www.");
+    map_get_rnd_bench!(btree_get_prefix_medium_10000,
+                       20,
+                       100,
+                       10000,
+                       BTreeMap,
+                       "https://www.");
+    map_get_rnd_bench!(btree_get_prefix_medium_100000,
+                       20,
+                       100,
+                       100000,
+                       BTreeMap,
+                       "https://www.");
+    map_insert_rnd_bench!(btree_insert_prefix_medium_10000,
+                          20,
+                          100,
+                          10000,
+                          BTreeMap,
+                          "https://www.");
+    map_insert_rnd_bench!(btree_insert_prefix_medium_100000,
+                          20,
+                          100,
+                          100000,
+                          BTreeMap,
+                          "https://www.");
 
     map_get_seq_bench!(btree_get_seq_100000, 20, 100, 100000, BTreeMap);
     map_insert_seq_bench!(btree_insert_seq_100000, 20, 100, 100000, BTreeMap);
@@ -797,10 +961,30 @@ mod bench {
     map_insert_rnd_bench!(hash_insert_medium_10000, 20, 100, 10000, HashMap);
     map_insert_rnd_bench!(hash_insert_medium_100000, 20, 100, 100000, HashMap);
 
-    map_get_rnd_bench!(hash_get_prefix_medium_10000, 20, 100, 10000, HashMap, "https://www.");
-    map_get_rnd_bench!(hash_get_prefix_medium_100000, 20, 100, 100000, HashMap, "https://www.");
-    map_insert_rnd_bench!(hash_insert_prefix_medium_10000, 20, 100, 10000, HashMap, "https://www.");
-    map_insert_rnd_bench!(hash_insert_prefix_medium_100000, 20, 100, 100000, HashMap, "https://www.");
+    map_get_rnd_bench!(hash_get_prefix_medium_10000,
+                       20,
+                       100,
+                       10000,
+                       HashMap,
+                       "https://www.");
+    map_get_rnd_bench!(hash_get_prefix_medium_100000,
+                       20,
+                       100,
+                       100000,
+                       HashMap,
+                       "https://www.");
+    map_insert_rnd_bench!(hash_insert_prefix_medium_10000,
+                          20,
+                          100,
+                          10000,
+                          HashMap,
+                          "https://www.");
+    map_insert_rnd_bench!(hash_insert_prefix_medium_100000,
+                          20,
+                          100,
+                          100000,
+                          HashMap,
+                          "https://www.");
 
 
 
