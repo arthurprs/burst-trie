@@ -1,34 +1,32 @@
-#![feature(alloc)]
 #![feature(libc)]
 
 extern crate rand;
 extern crate burst_trie;
 extern crate libc;
 
-use std::cmp::max;
 use std::io::Read;
 use std::io;
-use std::thread;
 use std::default::Default;
+#[allow(unused_imports)]
 use burst_trie::BurstTrieMap;
+#[allow(unused_imports)]
 use std::collections::{HashMap, BTreeMap};
-use std::ascii::AsciiExt;
 use libc::*;
 
-extern {fn je_malloc_stats_print (write_cb: extern fn (*const c_void, *const c_char), cbopaque: *const c_void, opts: *const c_char);}
+extern {fn je_stats_print (write_cb: extern fn (*const c_void, *const c_char), cbopaque: *const c_void, opts: *const c_char);}
 extern fn write_cb (_: *const c_void, message: *const c_char) {
     print! ("{}", String::from_utf8_lossy (unsafe {std::ffi::CStr::from_ptr (message as *const i8) .to_bytes()}));
 }
 
 fn stats_print() {
-    unsafe {je_malloc_stats_print (write_cb, std::ptr::null(), std::ptr::null())};
+    unsafe {je_stats_print (write_cb, std::ptr::null(), std::ptr::null())};
 }
 
 fn main() {
-    let words = gen_words(10000, 3, 25);
-    // let words = read_words();
+    // let words = gen_words(10000, 3, 25);
+    let words = read_words();
     println!("--sample--\n{:#?}--", &words[..10]);
-    let mut word_counts: HashMap<String, usize> = Default::default();
+    let mut word_counts: BTreeMap<String, usize> = Default::default();
     for word in words {
         let len = word.len();
         word_counts.insert(word, len);
@@ -38,6 +36,7 @@ fn main() {
     // word_counts.print_structure();
 }
 
+#[allow(dead_code)]
 fn read_words() -> Vec<String> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).unwrap();
@@ -49,6 +48,7 @@ fn read_words() -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn gen_words(count: usize, min_len: usize, max_len: usize) -> Vec<String> {
     use rand::{Rng, StdRng, SeedableRng};
     static SEED: &'static[usize] = &[0, 1, 1, 2, 3, 5, 8, 13, 21, 34];

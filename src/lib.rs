@@ -1,9 +1,7 @@
-#![feature(test)]
+#![cfg_attr(test, feature(test))]
 #![feature(box_patterns)]
-#![feature(collections_bound)]
-#![feature(btree_range)]
-#![feature(slice_extras)]
-#![feature(unsafe_no_drop_flag)]
+#![cfg_attr(test, feature(collections_bound))]
+#![cfg_attr(test, feature(btree_range))]
 #![feature(asm)]
 
 #[cfg(test)]
