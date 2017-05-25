@@ -111,15 +111,14 @@ impl<K, V> BurstTrieMap<K, V>
     /// ```
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
         let guard = epoch::pin();
-        let opt_old_value = BurstTrieNode::insert(self.root
-                                                      .load(atomic::Ordering::Acquire, &guard),
+        let opt_old_value = BurstTrieNode::insert(self.root.load(atomic::Ordering::SeqCst, &guard),
                                                   key,
                                                   value,
                                                   0,
                                                   &self.root,
                                                   &guard);
         if opt_old_value.is_none() {
-            self.len.fetch_add(1, atomic::Ordering::Relaxed);
+            self.len.fetch_add(1, atomic::Ordering::SeqCst);
         }
         opt_old_value
     }
@@ -143,18 +142,18 @@ impl<K, V> BurstTrieMap<K, V>
     {
         let guard = epoch::pin();
         let result = {
-            let result = BurstTrieNode::get(self.root.load(atomic::Ordering::Acquire, &guard),
-                                        key,
-                                        0,
-                                        &guard);
+            let result = BurstTrieNode::get(self.root.load(atomic::Ordering::SeqCst, &guard),
+                                            key,
+                                            0,
+                                            &guard);
             result.map(|r| {
-                Wrapper {
-                    key: r.0,
-                    value: r.1,
-                    _lock: Some(unsafe { mem::transmute(r.2) }),
-                    _guard: unsafe { mem::transmute_copy(&guard) },
-                }
-            })
+                           Wrapper {
+                               key: r.0,
+                               value: r.1,
+                               _lock: Some(unsafe { mem::transmute(r.2) }),
+                               _guard: unsafe { mem::transmute_copy(&guard) },
+                           }
+                       })
         };
 
         mem::forget(guard);
@@ -205,14 +204,13 @@ impl<K, V> BurstTrieMap<K, V>
         where Q: AsRef<[u8]>
     {
         let guard = epoch::pin();
-        let opt_old_value = BurstTrieNode::remove(self.root
-                                                      .load(atomic::Ordering::Acquire, &guard),
+        let opt_old_value = BurstTrieNode::remove(self.root.load(atomic::Ordering::SeqCst, &guard),
                                                   key,
                                                   0,
                                                   &self.root,
                                                   &guard);
         if opt_old_value.is_some() {
-            self.len.fetch_sub(1, atomic::Ordering::Relaxed);
+            self.len.fetch_sub(1, atomic::Ordering::SeqCst);
         }
         opt_old_value
     }
@@ -230,7 +228,7 @@ impl<K, V> BurstTrieMap<K, V>
     /// assert_eq!(a.len(), 1);
     /// ```
     pub fn len(&self) -> usize {
-        self.len.load(atomic::Ordering::Relaxed)
+        self.len.load(atomic::Ordering::SeqCst)
     }
 
     /// Returns *true* if the map is empty.
@@ -254,17 +252,15 @@ impl<K, V> BurstTrieMap<K, V>
     /// ```
     pub fn clear(&self) {
         let guard = epoch::pin();
-        let drop_count = BurstTrieNode::drop(self.root
-                                                 .swap(None, atomic::Ordering::Acquire, &guard),
-                                             &guard);
-        self.len.fetch_sub(drop_count, atomic::Ordering::Relaxed);
+        let drop_count =
+            BurstTrieNode::drop(self.root.swap(None, atomic::Ordering::SeqCst, &guard),
+                                &guard);
+        self.len.fetch_sub(drop_count, atomic::Ordering::SeqCst);
     }
 
     pub fn print_structure(&self) {
         let guard = epoch::pin();
-        BurstTrieNode::print_structure(self.root.load(atomic::Ordering::Acquire, &guard),
-                                       0,
-                                       &guard);
+        BurstTrieNode::print_structure(self.root.load(atomic::Ordering::SeqCst, &guard), 0, &guard);
     }
 }
 
@@ -280,24 +276,6 @@ impl<'a, K, V> Drop for Wrapper<'a, K, V> {
     fn drop(&mut self) {
         // make sure lock is dropped before guard
         self._lock.take();
-    }
-}
-
-impl<K, V> Drop for ContainerNode<K, V>
-    where K: AsRef<[u8]>
-{
-    fn drop(&mut self) {
-        println!("dropping ContainerNode {:?}", self as *const _ as usize);
-        register_free(self);
-    }
-}
-
-impl<K, V> Drop for AccessNode<K, V>
-    where K: AsRef<[u8]>
-{
-    fn drop(&mut self) {
-        println!("dropping AccessNode {:?}", self as *const _ as usize);
-        register_free(self);
     }
 }
 
@@ -336,10 +314,10 @@ impl<K, V> BurstTrieNode<K, V>
 
     #[inline]
     fn get<'a, Q: ?Sized>(n: Option<Shared<'a, Self>>,
-                      key: &Q,
-                      depth: usize,
-                      guard: &'a epoch::Guard)
-                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          key: &Q,
+                          depth: usize,
+                          guard: &'a epoch::Guard)
+                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         match Self::_type(n) {
@@ -359,12 +337,14 @@ impl<K, V> BurstTrieNode<K, V>
         match Self::_type(n) {
             BurstTrieNodeType::Access => n.unwrap().as_access().insert_pair(pair, depth, guard),
             BurstTrieNodeType::Container => {
-                n.unwrap().as_container().insert_pair(pair, depth, node_ref, guard)
+                n.unwrap()
+                    .as_container()
+                    .insert_pair(pair, depth, node_ref, guard)
             }
             BurstTrieNodeType::Empty => unsafe {
                 let mut container = ContainerNode::new();
                 container.insert_pair(pair, depth, node_ref, guard);
-                node_ref.store(mem::transmute(container), atomic::Ordering::Release);
+                node_ref.store(Some(mem::transmute(container)), atomic::Ordering::SeqCst);
             },
         }
     }
@@ -385,19 +365,22 @@ impl<K, V> BurstTrieNode<K, V>
                 }
                 BurstTrieNodeType::Container => {
                     if let Some(_w_lock) = n.unwrap().as_container().rw_lock.try_write() {
-                        return n.unwrap().as_container().insert(key, value, depth, node_ref, guard);
+                        return n.unwrap()
+                                   .as_container()
+                                   .insert(key, value, depth, node_ref, guard);
                     }
                     panic!();
                 }
                 BurstTrieNodeType::Empty => unsafe {
                     let container: Owned<ContainerNode<K, V>> = ContainerNode::new();
-                    if let Err(_c) =
-                           node_ref.cas(n, mem::transmute(container), atomic::Ordering::AcqRel) {
+                    if let Err(_c) = node_ref.cas(n,
+                                                  Some(mem::transmute(container)),
+                                                  atomic::Ordering::SeqCst) {
                         panic!();
                     }
                 },
             }
-            n = node_ref.load(atomic::Ordering::Acquire, guard);
+            n = node_ref.load(atomic::Ordering::SeqCst, guard);
         }
     }
 
@@ -422,7 +405,7 @@ impl<K, V> BurstTrieNode<K, V>
                 }
                 BurstTrieNodeType::Empty => return None,
             }
-            n = node_ref.load(atomic::Ordering::Acquire, guard);
+            n = node_ref.load(atomic::Ordering::SeqCst, guard);
         }
     }
 
@@ -433,18 +416,18 @@ impl<K, V> BurstTrieNode<K, V>
                 BurstTrieNodeType::Access => {
                     let mut drop_count = n.unwrap().as_access().terminator.iter().count();
                     for child in n.unwrap().as_access().nodes.iter() {
-                        drop_count += BurstTrieNode::drop(child.load(atomic::Ordering::Acquire,
+                        drop_count += BurstTrieNode::drop(child.load(atomic::Ordering::SeqCst,
                                                                      &guard),
                                                           &guard);
                     }
                     ptr::drop_in_place(n.unwrap().as_access());
-                    guard.unlinked::<Shared<AccessNode<K, V>>>(mem::transmute(n));
+                    guard.unlinked::<AccessNode<K, V>>(mem::transmute(n));
                     drop_count
                 }
                 BurstTrieNodeType::Container => {
                     let drop_count = n.unwrap().as_container().items.len();
                     ptr::drop_in_place(n.unwrap().as_container());
-                    guard.unlinked::<Shared<ContainerNode<K, V>>>(mem::transmute(n));
+                    guard.unlinked::<ContainerNode<K, V>>(mem::transmute(n));
                     drop_count
                 }
                 BurstTrieNodeType::Empty => 0,
@@ -461,7 +444,7 @@ impl<K, V> BurstTrieNode<K, V>
                              (0..depth).map(|_| ' ').collect::<String>(),
                              n.unwrap().as_raw(),
                              c as u8 as char);
-                    Self::print_structure(node.load(atomic::Ordering::Acquire, guard),
+                    Self::print_structure(node.load(atomic::Ordering::SeqCst, guard),
                                           depth + 1,
                                           guard);
                 }
@@ -475,29 +458,6 @@ impl<K, V> BurstTrieNode<K, V>
             BurstTrieNodeType::Empty => (),
         }
     }
-}
-
-// The expansion of this is quite a bit of code, so mark callers as non inlineable
-#[inline]
-fn opt_binary_search_by<K, F>(slice: &[K], mut f: F) -> Result<usize, usize>
-    where F: FnMut(&K) -> Ordering
-{
-    let mut base: usize = 0;
-    let mut lim: usize = slice.len();
-
-    while lim != 0 {
-        let ix = base + (lim >> 1);
-        match f(unsafe { &slice.get_unchecked(ix) }) {
-            Ordering::Equal => return Ok(ix),
-            Ordering::Less => {
-                base = ix + 1;
-                lim -= 1;
-            }
-            Ordering::Greater => (),
-        }
-        lim >>= 1;
-    }
-    Err(base)
 }
 
 /// Bytewise slice comparison.
@@ -516,12 +476,12 @@ fn cmp_slice_offset(a: &[u8], b: &[u8], offset: usize) -> Ordering {
                cmp::min(a.len(), b.len()) - offset)
     };
 
-    if cmp == 0 {
-        a.len().cmp(&b.len())
-    } else if cmp < 0 {
+    if cmp < 0 {
         Ordering::Less
-    } else {
+    } else if cmp > 0  {
         Ordering::Greater
+    } else {
+        a.len().cmp(&b.len())
     }
 }
 
@@ -529,13 +489,11 @@ impl<K, V> ContainerNode<K, V>
     where K: AsRef<[u8]>
 {
     fn new() -> Owned<Self> {
-        let c = Owned::new(ContainerNode {
-            _type: BurstTrieNodeType::Container,
-            rw_lock: spin::RwLock::new(()),
-            items: ArrayVec::new(),
-        });
-        register_allocation(&*c);
-        c
+        Owned::new(ContainerNode {
+                       _type: BurstTrieNodeType::Container,
+                       rw_lock: spin::RwLock::new(()),
+                       items: ArrayVec::new(),
+                   })
     }
 
     #[inline(never)]
@@ -550,8 +508,8 @@ impl<K, V> ContainerNode<K, V>
         }
         unsafe {
             ptr::drop_in_place(self);
-            guard.unlinked::<Shared<Self>>(mem::transmute(self));
-            Some(node_ref.store_and_ref(mem::transmute(access), atomic::Ordering::Release, guard))
+            guard.unlinked::<ContainerNode<K, V>>(mem::transmute(self));
+            Some(node_ref.store_and_ref(mem::transmute(access), atomic::Ordering::SeqCst, guard))
         }
     }
 
@@ -580,9 +538,11 @@ impl<K, V> ContainerNode<K, V>
               guard: &epoch::Guard)
               -> Option<(K, V)> {
         let insert_pos = {
-            let res_bs = opt_binary_search_by(&self.items, |other| {
-                cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
-            });
+            let res_bs =
+                self.items
+                    .binary_search_by(|other| {
+                                          cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
+                                      });
             match res_bs {
                 Ok(pos) => {
                     let old_value = unsafe { self.items.get_unchecked_mut(pos) };
@@ -609,9 +569,9 @@ impl<K, V> ContainerNode<K, V>
     fn remove<Q: ?Sized>(&mut self, key: &Q, depth: usize, _: &epoch::Guard) -> Option<(K, V)>
         where Q: AsRef<[u8]>
     {
-        let res_bs = opt_binary_search_by(&self.items, |other| {
-            cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
-        });
+        let res_bs =
+            self.items
+                .binary_search_by(|other| cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth));
         match res_bs {
             Ok(pos) => self.items.remove(pos),
             Err(_) => None,
@@ -620,21 +580,21 @@ impl<K, V> ContainerNode<K, V>
 
     #[inline(never)]
     fn get<'a, Q: ?Sized>(&'a self,
-                      key: &Q,
-                      depth: usize,
-                      _: &epoch::Guard)
-                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          key: &Q,
+                          depth: usize,
+                          _: &epoch::Guard)
+                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         let _r_lock = self.rw_lock.read();
-        let res_bs = opt_binary_search_by(&self.items, |other| {
-            cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth)
-        });
+        let res_bs =
+            self.items
+                .binary_search_by(|other| cmp_slice_offset(other.0.as_ref(), key.as_ref(), depth));
         if let Ok(pos) = res_bs {
             Some(unsafe {
-                let r = self.items.get_unchecked(pos);
-                (&r.0 as *const _, &r.1 as *const _, _r_lock)
-            })
+                     let r = self.items.get_unchecked(pos);
+                     (&r.0 as *const _, &r.1 as *const _, _r_lock)
+                 })
         } else {
             None
         }
@@ -645,21 +605,19 @@ impl<K, V> AccessNode<K, V>
     where K: AsRef<[u8]>
 {
     fn new() -> Owned<Self> {
-        let a = Owned::new(AccessNode {
-            _type: BurstTrieNodeType::Access,
-            rw_lock: spin::RwLock::new(()),
-            nodes: unsafe { mem::zeroed() },
-            terminator: None,
-        });
-        register_allocation(&*a);
-        a
+        Owned::new(AccessNode {
+                       _type: BurstTrieNodeType::Access,
+                       rw_lock: spin::RwLock::new(()),
+                       nodes: unsafe { mem::zeroed() },
+                       terminator: None,
+                   })
     }
 
     fn insert_pair(&mut self, pair: (K, V), depth: usize, guard: &epoch::Guard) {
         // depth is always <= key.len
         if depth < pair.0.as_ref().len() {
             let idx = pair.0.as_ref()[depth] as usize;
-            BurstTrieNode::insert_pair(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+            BurstTrieNode::insert_pair(self.nodes[idx].load(atomic::Ordering::SeqCst, guard),
                                        pair,
                                        depth + 1,
                                        &self.nodes[idx],
@@ -673,7 +631,7 @@ impl<K, V> AccessNode<K, V>
         // depth is always <= key.len
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::insert(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+            BurstTrieNode::insert(self.nodes[idx].load(atomic::Ordering::SeqCst, guard),
                                   key,
                                   value,
                                   depth + 1,
@@ -690,7 +648,7 @@ impl<K, V> AccessNode<K, V>
     {
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::remove(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+            BurstTrieNode::remove(self.nodes[idx].load(atomic::Ordering::SeqCst, guard),
                                   key,
                                   depth + 1,
                                   &self.nodes[idx],
@@ -702,21 +660,23 @@ impl<K, V> AccessNode<K, V>
     }
 
     fn get<'a, Q: ?Sized>(&'a self,
-                      key: &Q,
-                      depth: usize,
-                      guard: &'a epoch::Guard)
-                      -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          key: &Q,
+                          depth: usize,
+                          guard: &'a epoch::Guard)
+                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         if depth < key.as_ref().len() {
             let idx = key.as_ref()[depth] as usize;
-            BurstTrieNode::get(self.nodes[idx].load(atomic::Ordering::Acquire, guard),
+            BurstTrieNode::get(self.nodes[idx].load(atomic::Ordering::SeqCst, guard),
                                key,
                                depth + 1,
                                guard)
         } else {
             let _lock = self.rw_lock.read();
-            self.terminator.as_ref().map(|r| (&r.0 as *const _, &r.1 as *const _, _lock))
+            self.terminator
+                .as_ref()
+                .map(|r| (&r.0 as *const _, &r.1 as *const _, _lock))
         }
     }
 }
@@ -726,39 +686,6 @@ impl<K, V> Default for BurstTrieMap<K, V>
 {
     fn default() -> BurstTrieMap<K, V> {
         BurstTrieMap::new()
-    }
-}
-
-use std::sync::Mutex;
-use std::collections::HashSet;
-
-lazy_static! {
-    static ref CREATED: Mutex<HashSet<(usize, usize)>> = Mutex::new(Default::default());
-    static ref CLEANED: Mutex<HashSet<(usize, usize)>> = Mutex::new(Default::default());
-}
-
-fn register_allocation<T>(addr: &T) {
-    let addr = addr as *const T as usize;
-    println!("{:?} ({}) allocated", addr, mem::size_of::<T>());
-    assert!(CREATED.lock().unwrap().insert((addr, mem::size_of::<T>())));
-}
-
-fn register_free<T>(addr: &T) {
-    let addr = addr as *const T as usize;
-    let t = CREATED.lock().unwrap().remove(&(addr, mem::size_of::<T>()));
-    match t {
-        true => {
-            println!("{:?} deallocated, ok: {}, left: {}",
-                     addr,
-                     CLEANED.lock().unwrap().insert((addr, mem::size_of::<T>())),
-                     CREATED.lock().unwrap().len());
-        }
-        false => {
-            println!("{:?} not CREATED, in CLEANED {}",
-                     addr,
-                     CLEANED.lock().unwrap().contains(&(addr, mem::size_of::<T>())));
-            assert!(false);
-        }
     }
 }
 

@@ -6,26 +6,18 @@ authors = ["arthurprs <arthurprs@gmail.com>"]
 
 [dependencies]
 rand = "0.3.7"
-crossbeam = "*"
 spin = "*"
 arrayvec = "*"
 lazy_static = "*"
 
+[dependencies.crossbeam]
+git="https://github.com/aturon/crossbeam.git"
+
 [profile.dev]
-opt-level = 0
-debug = true
-rpath = false
-lto = false
-debug-assertions = true
-codegen-units = 8
+codegen-units = 2
 
-[profile.release]
-opt-level = 3
-debug = true
-rpath = false
-lto = false
-debug-assertions = false
-codegen-units = 1
-
-[profile.bench]
-debug = true
+# [profile.release]
+# debug = true
+#
+# [profile.bench]
+# debug = true
