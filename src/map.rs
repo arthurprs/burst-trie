@@ -40,19 +40,18 @@ enum BurstTrieNodeType {
 }
 
 pub struct Wrapper<'a, K: 'a, V: 'a> {
-    key: *const K,
-    value: *const V,
+    pair: *const (K, V),
     _lock: Option<spin::RwLockReadGuard<'a, ()>>,
     _guard: epoch::Guard,
 }
 
 impl<'a, K, V> Wrapper<'a, K, V> {
     pub fn key(&self) -> &K {
-        unsafe { mem::transmute(self.key) }
+        unsafe { mem::transmute(&(*self.pair).0) }
     }
 
     pub fn value(&self) -> &V {
-        unsafe { mem::transmute(self.value) }
+        unsafe { mem::transmute(&(*self.pair).1) }
     }
 }
 
@@ -69,6 +68,7 @@ struct ContainerNode<K, V>
     where K: AsRef<[u8]>
 {
     _type: BurstTrieNodeType,
+    valid: bool,
     rw_lock: spin::RwLock<()>,
     items: ArrayVec<[(K, V); CONTAINER_SIZE]>,
 }
@@ -145,12 +145,12 @@ impl<K, V> BurstTrieMap<K, V>
             let result = BurstTrieNode::get(self.root.load(atomic::Ordering::SeqCst, &guard),
                                             key,
                                             0,
+                                            &self.root,
                                             &guard);
             result.map(|r| {
                            Wrapper {
-                               key: r.0,
-                               value: r.1,
-                               _lock: Some(unsafe { mem::transmute(r.2) }),
+                               pair: r.0,
+                               _lock: Some(unsafe { mem::transmute(r.1) }),
                                _guard: unsafe { mem::transmute_copy(&guard) },
                            }
                        })
@@ -313,17 +313,27 @@ impl<K, V> BurstTrieNode<K, V>
     }
 
     #[inline]
-    fn get<'a, Q: ?Sized>(n: Option<Shared<'a, Self>>,
+    fn get<'a, Q: ?Sized>(mut n: Option<Shared<'a, Self>>,
                           key: &Q,
                           depth: usize,
+                          node_ref: BurstTrieNodeRef<K, V>,
                           guard: &'a epoch::Guard)
-                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          -> Option<(*const (K, V), spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
-        match Self::_type(n) {
-            BurstTrieNodeType::Access => n.unwrap().as_access().get(key, depth, guard),
-            BurstTrieNodeType::Container => n.unwrap().as_container().get(key, depth, guard),
-            BurstTrieNodeType::Empty => None,
+        loop {
+            match Self::_type(n) {
+                BurstTrieNodeType::Access => return n.unwrap().as_access().get(key, depth, guard),
+                BurstTrieNodeType::Container => {
+                    let container = n.unwrap().as_container();
+                    let _r_lock = container.rw_lock.read();
+                    if container.valid {
+                        return container.get(key, depth, guard);
+                    }
+                }
+                BurstTrieNodeType::Empty => return None,
+            }
+            n = node_ref.load(atomic::Ordering::SeqCst, guard)
         }
     }
 
@@ -369,7 +379,6 @@ impl<K, V> BurstTrieNode<K, V>
                                    .as_container()
                                    .insert(key, value, depth, node_ref, guard);
                     }
-                    panic!();
                 }
                 BurstTrieNodeType::Empty => unsafe {
                     let container: Owned<ContainerNode<K, V>> = ContainerNode::new();
@@ -478,7 +487,7 @@ fn cmp_slice_offset(a: &[u8], b: &[u8], offset: usize) -> Ordering {
 
     if cmp < 0 {
         Ordering::Less
-    } else if cmp > 0  {
+    } else if cmp > 0 {
         Ordering::Greater
     } else {
         a.len().cmp(&b.len())
@@ -491,6 +500,7 @@ impl<K, V> ContainerNode<K, V>
     fn new() -> Owned<Self> {
         Owned::new(ContainerNode {
                        _type: BurstTrieNodeType::Container,
+                       valid: true,
                        rw_lock: spin::RwLock::new(()),
                        items: ArrayVec::new(),
                    })
@@ -506,8 +516,9 @@ impl<K, V> ContainerNode<K, V>
         for pair in self.items.drain(..) {
             access.insert_pair(pair, depth, guard);
         }
+        self.valid = false;
         unsafe {
-            ptr::drop_in_place(self);
+            // ptr::drop_in_place(self);
             guard.unlinked::<ContainerNode<K, V>>(mem::transmute(self));
             Some(node_ref.store_and_ref(mem::transmute(access), atomic::Ordering::SeqCst, guard))
         }
@@ -583,7 +594,7 @@ impl<K, V> ContainerNode<K, V>
                           key: &Q,
                           depth: usize,
                           _: &epoch::Guard)
-                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          -> Option<(*const (K, V), spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         let _r_lock = self.rw_lock.read();
@@ -593,7 +604,7 @@ impl<K, V> ContainerNode<K, V>
         if let Ok(pos) = res_bs {
             Some(unsafe {
                      let r = self.items.get_unchecked(pos);
-                     (&r.0 as *const _, &r.1 as *const _, _r_lock)
+                     (r as *const _, _r_lock)
                  })
         } else {
             None
@@ -663,7 +674,7 @@ impl<K, V> AccessNode<K, V>
                           key: &Q,
                           depth: usize,
                           guard: &'a epoch::Guard)
-                          -> Option<(*const K, *const V, spin::RwLockReadGuard<'a, ()>)>
+                          -> Option<(*const (K, V), spin::RwLockReadGuard<'a, ()>)>
         where Q: AsRef<[u8]>
     {
         if depth < key.as_ref().len() {
@@ -671,12 +682,11 @@ impl<K, V> AccessNode<K, V>
             BurstTrieNode::get(self.nodes[idx].load(atomic::Ordering::SeqCst, guard),
                                key,
                                depth + 1,
+                               &self.nodes[idx],
                                guard)
         } else {
             let _lock = self.rw_lock.read();
-            self.terminator
-                .as_ref()
-                .map(|r| (&r.0 as *const _, &r.1 as *const _, _lock))
+            self.terminator.as_ref().map(|r| (r as *const _, _lock))
         }
     }
 }
